@@ -217,3 +217,16 @@ def test_pixel_ops_postprocess_id_tracks_check_settings(smoke_cfg):
     jobs = read_jsonl(cfg.run_dir / "jobs.jsonl")
     px = next(j["job_id"] for j in jobs if j["generation_method"] == "pixel_ops")
     assert first[px] and second[px] and first[px] != second[px]
+
+
+def test_finalize_refuses_a_changed_input_png(smoke_cfg):
+    cfg = _with_pixel_actions(smoke_cfg, '[[sprites]]\nsubject = "slime"\nactions = ["px_bob"]\n')
+    jobs = read_jsonl(prepare(cfg))
+    job = next(j for j in jobs if j["generation_method"] == "pixel_ops")
+    png = cfg.run_dir / job["input_png"]
+    rgba = load_rgba(png)
+    rgba[rgba[..., 3] > 0, 0] ^= 1  # as if a later prepare rewrote it, jobs.jsonl not yet
+    save_png(png, rgba)
+    index = {r["job_id"]: r for r in finalize(cfg.run_dir, cfg.finalize)}
+    assert index[job["job_id"]]["status"] == "finalize_failed"
+    assert not (cfg.run_dir / "final" / job["job_id"]).exists()

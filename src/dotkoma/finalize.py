@@ -217,6 +217,9 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
 def finalize_pixel_ops_job(run_dir: Path, job: dict, cfg: FinalizeConfig) -> dict[str, Any]:
     """Frames are exact translations of the source sprite; no video is involved."""
     source = load_rgba(run_dir / job["input_png"])
+    if pixel_ops.sprite_digest(source) != job["sprite_sha256"]:
+        # e.g. prepare was interrupted after rewriting inputs/ but before jobs.jsonl
+        raise ValueError(f"{job['input_png']} does not match the sprite this job was made for")
     ops = job["pixel_ops"]
     frames, lost = pixel_ops.render(source, ops["offsets"])
     checks = run_checks(frames, source, lost, 0.0, cfg)

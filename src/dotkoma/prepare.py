@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
-
-import numpy as np
 
 from .config import Config
 from .imaging import Layout, choose_key_color, make_reference, save_png
 from .pixel_ops import expand as expand_pixel_ops
-from .pixel_ops import fits
+from .pixel_ops import fits, sprite_digest
 from .records import derive_seed, job_id, stable_hash, write_json_atomic, write_jsonl_atomic
 from .source import Sprite, load_sprites, source_ref
 
@@ -235,6 +232,7 @@ def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, ru
             ops["offsets"],
         )
         return None
+    digest = sprite_digest(sp.rgba)
     jid = job_id(
         {
             "source": {**src, "row_id": sp.row_id},
@@ -242,7 +240,7 @@ def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, ru
             "generation_method": "pixel_ops",
             "pixel_ops": ops,
             # the frames are made from these exact pixels, so an edited sprite is a new job
-            "sprite_sha256": hashlib.sha256(np.ascontiguousarray(sp.rgba).tobytes()).hexdigest(),
+            "sprite_sha256": digest,
         }
     )
     return {
@@ -256,6 +254,7 @@ def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, ru
         "prompt_method": None,
         "prompt_variant": None,
         "pixel_ops": ops,
+        "sprite_sha256": digest,  # finalize refuses an input_png with other pixels
         "input_png": src_png.relative_to(run).as_posix(),
     }
 

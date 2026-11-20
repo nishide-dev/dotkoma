@@ -19,6 +19,7 @@ changing a preset formula yields new jobs.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any
 
@@ -120,3 +121,8 @@ def fits(source: np.ndarray, offsets: list[list[int]]) -> bool:
     return all(
         -m["left"] <= dx <= m["right"] and -m["top"] <= dy <= m["bottom"] for dx, dy in offsets
     )
+
+
+def sprite_digest(rgba: np.ndarray) -> str:
+    """sha256 of the RGBA pixels: ties a pixel_ops job to the exact sprite it moves."""
+    return hashlib.sha256(np.ascontiguousarray(rgba, dtype=np.uint8).tobytes()).hexdigest()
