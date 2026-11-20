@@ -1,0 +1,47 @@
+# Stage 0: CPU-only end-to-end check with hand-drawn sprites and the fake backend.
+#   uv run dotkoma prepare configs/smoke.toml
+#   uv run dotkoma generate configs/smoke.toml
+#   uv run dotkoma finalize configs/smoke.toml
+version = "smoke-v1"
+
+[run]
+name = "smoke"
+work_dir = "work"
+
+[source]
+kind = "local"
+path = "../tests/fixtures/sprites"
+
+[[sprites]]
+subject = "slime"
+actions = ["hop", "bob"]
+
+[[sprites]]
+subject = "ghost"
+actions = ["bob", "sway"]
+
+[[sprites]]
+subject = "candle"
+actions = ["sway", "static"]
+
+[actions.hop]
+prompt = "{subject} hops once in place and lands back in its original pose"
+[actions.bob]
+prompt = "{subject} floats gently up and down"
+[actions.sway]
+prompt = "{subject} sways gently left and right"
+[actions.static]
+prompt = "{subject} stays still"  # the fake backend makes no motion: must be rejected
+
+[generation]
+backend = "fake"
+width = 320
+height = 256
+num_frames = 24
+fps = 12
+
+[reference]
+scale = 10
+
+[finalize]
+num_frames = 6

@@ -1,0 +1,166 @@
+"""prepare (local CPU): pick sprites, build reference images, write jobs.jsonl."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from .config import Config
+from .imaging import Layout, choose_key_color, make_reference, save_png
+from .records import derive_seed, job_id, stable_hash, write_json_atomic, write_jsonl_atomic
+from .source import Sprite, load_sprites, source_ref
+
+log = logging.getLogger(__name__)
+
+
+def assign_split(subject: str, cfg: Config) -> str:
+    """Split by subject so variants of one subject never straddle train/eval."""
+    u = int(stable_hash([cfg.split.salt, subject], 8), 16) / 0xFFFFFFFF
+    if u < cfg.split.test:
+        return "test"
+    if u < cfg.split.test + cfg.split.val:
+        return "val"
+    return "train"
+
+
+def _shape_distance(a: Sprite, b: Sprite) -> float:
+    """1 - IoU of alpha masks: recolours of the same shape score ~0."""
+    ma, mb = a.rgba[..., 3] > 0, b.rgba[..., 3] > 0
+    union = (ma | mb).sum()
+    return 1.0 - ((ma & mb).sum() / union) if union else 0.0
+
+
+def pick_distinct(candidates: list[Sprite], count: int, min_distance: float = 0.15) -> list[Sprite]:
+    """Greedy pick of sprites that differ in silhouette, not just in colour."""
+    chosen: list[Sprite] = []
+    for c in candidates:
+        if len(chosen) >= count:
+            break
+        if all(_shape_distance(c, p) >= min_distance for p in chosen):
+            chosen.append(c)
+    return chosen
+
+
+def build_prompt(template: str, sprite: Sprite) -> str:
+    return template.format(subject=sprite.subject, caption=sprite.caption)
+
+
+def prepare(cfg: Config) -> Path:
+    run = cfg.run_dir
+    inputs = run / "inputs"
+    inputs.mkdir(parents=True, exist_ok=True)
+
+    subjects = {p.subject for p in cfg.sprites}
+    found = load_sprites(cfg.source, subjects)
+    missing = sorted(subjects - set(found))
+    if missing:
+        raise SystemExit(f"subjects not found in source: {missing}")
+
+    g, r = cfg.generation, cfg.reference
+    layout = Layout.centered(g.width, g.height, r.scale)
+    src = source_ref(cfg.source)
+
+    jobs: list[dict] = []
+    seen: set[str] = set()
+    for pick in cfg.sprites:
+        pool = found[pick.subject]
+        if pick.row_id is not None:
+            pool = [s for s in pool if s.row_id == pick.row_id]
+            if not pool:
+                raise SystemExit(f"row_id {pick.row_id} ({pick.subject}) not found")
+        sprites = pick_distinct(pool, pick.count)
+        if len(sprites) < pick.count:
+            log.warning(
+                "%s: only %d distinct sprites (wanted %d)", pick.subject, len(sprites), pick.count
+            )
+
+        for sp in sprites:
+            key = choose_key_color(sp.rgba, r.key_colors)
+            stem = f"{sp.row_id:07d}"
+            src_png = inputs / f"{stem}.png"
+            ref_png = inputs / f"{stem}_ref_{key.lstrip('#')}.png"
+            save_png(src_png, sp.rgba)
+            save_png(ref_png, make_reference(sp.rgba, layout, key))
+
+            for action_name, variant in (
+                (a, v)
+                for a in pick.actions
+                for v in cfg.actions[a].variant_indices(pick.prompt_variants)
+            ):
+                action = cfg.actions[action_name]
+                prompt = build_prompt(action.prompts[variant], sp)
+                # same seed for every wording, so variants differ only in the prompt
+                seed = g.seed if g.seed is not None else derive_seed(src, sp.row_id, action_name)
+                gen_inputs = {
+                    "source": {**src, "row_id": sp.row_id},
+                    "action": action_name,
+                    "prompt": prompt,
+                    "negative_prompt": g.negative_prompt,
+                    "seed": seed,
+                    "model": {"backend": g.backend, "id": g.model_id, "revision": g.model_revision},
+                    "inference": {
+                        "width": g.width,
+                        "height": g.height,
+                        "num_frames": g.num_frames,
+                        "fps": g.fps,
+                        "steps": g.steps,
+                        "guidance": g.guidance,
+                    },
+                    "reference": {"layout": layout.to_dict(), "key_color": key},
+                }
+                jid = job_id(gen_inputs)
+                if jid in seen:
+                    continue
+                seen.add(jid)
+                jobs.append(
+                    {
+                        "job_id": jid,
+                        "config_version": cfg.version,
+                        "source": {
+                            **src,
+                            "row_id": sp.row_id,
+                            "subject": sp.subject,
+                            "caption": sp.caption,
+                        },
+                        "split": assign_split(sp.subject, cfg),
+                        "requested_action": action_name,
+                        "motion": action.motion,
+                        "generation_method": "video_model",
+                        "prompt_method": action.method,
+                        "prompt_variant": variant,
+                        "prompt": prompt,
+                        "negative_prompt": g.negative_prompt,
+                        "seed": seed,
+                        "model": gen_inputs["model"],
+                        "inference": gen_inputs["inference"],
+                        "layout": layout.to_dict(),
+                        "key_color": key,
+                        "input_png": src_png.relative_to(run).as_posix(),
+                        "reference_png": ref_png.relative_to(run).as_posix(),
+                    }
+                )
+
+    jobs.sort(key=lambda j: (j["source"]["row_id"], j["requested_action"], j["prompt_variant"]))
+    jobs_path = run / "jobs.jsonl"
+    write_jsonl_atomic(jobs_path, jobs)
+    write_json_atomic(run / "config.snapshot.json", cfg.to_dict())
+    log.info("wrote %d jobs to %s", len(jobs), jobs_path)
+    _report_coverage(jobs)
+    return jobs_path
+
+
+def _report_coverage(jobs: list[dict]) -> None:
+    subjects = sorted({j["source"]["subject"] for j in jobs})
+    actions = sorted({j["requested_action"] for j in jobs})
+    per_action = {
+        a: len({j["source"]["subject"] for j in jobs if j["requested_action"] == a})
+        for a in actions
+    }
+    log.info(
+        "subjects=%d actions=%d subjects-per-action=%s", len(subjects), len(actions), per_action
+    )
+    lone = [a for a, n in per_action.items() if n < 2]
+    if lone:
+        log.warning(
+            "actions used by a single subject (label can be learned from subject): %s", lone
+        )

@@ -1,0 +1,21 @@
+# local planning material (kept out of git on purpose)
+dotkoma-project-report.pdf
+*.pdf
+
+# run outputs: raw videos, records, finals live outside git
+work/
+
+# python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+
+# secrets
+.env
+*.token
+
+.DS_Store

@@ -1,0 +1,78 @@
+# Stage 1 pilot: 6 sprites x 2 actions = 12 jobs on Colab (Wan2.2 TI2V-5B, L4 24GB class).
+version = "pilot-v1"
+
+[run]
+name = "pilot"
+work_dir = "work"
+
+[source]
+kind = "atlas"
+repo_id = "Angais/pixel-art-atlas-1.4m"
+revision = "bf78f8c8cbafa6d07718111a94d41e2dd79ddaa7"
+shards = ["data/train-000.parquet"]  # one 29 MB shard is enough for the pilot
+
+[[sprites]]
+subject = "cat"
+actions = ["blink", "hop"]
+
+[[sprites]]
+subject = "ghost"
+actions = ["blink", "bob"]
+
+[[sprites]]
+subject = "slime"
+actions = ["hop", "bob"]
+
+[[sprites]]
+subject = "toy robot"  # Atlas has few full characters; "knight" alone does not exist
+actions = ["wave", "hop"]
+
+[[sprites]]
+subject = "candle"
+actions = ["flicker", "hop"]
+
+[[sprites]]
+subject = "cup of coffee"
+actions = ["steam", "bob"]
+
+# {subject} and {caption} are filled from the Atlas row.
+# Each action may list alternative wordings as prompts = ["...", "..."]; a sprite runs
+# variant 0 unless it sets prompt_variants = "all" or e.g. [0, 2]. All variants of an
+# action share one seed, so acceptance rate per prompt_variant isolates the wording.
+[actions.blink]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} blinks its eyes once, everything else stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.hop]
+motion = "global"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} hops once in place and lands back in its original pose. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.bob]
+motion = "global"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} floats slowly up and down by a small amount. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.wave]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} waves one hand, its body stays in place. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.flicker]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. Only the flame flickers gently, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.steam]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. Small wisps of steam rise from the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+
+[generation]
+backend = "diffusers"
+model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+model_revision = "main"  # resolved to a commit sha at load time and recorded in results.jsonl
+width = 1280
+height = 704
+num_frames = 49  # ~2 s at 24 fps; Wan needs 4k+1 frames
+fps = 24
+steps = 40
+guidance = 5.0
+negative_prompt = "camera motion, zoom, pan, blurry, smooth shading, gradients, extra characters, text, watermark, color change"
+offload = true
+
+[reference]
+scale = 28  # 448 px sprite on a 1280x704 canvas
+
+[finalize]
+num_frames = 6

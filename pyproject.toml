@@ -1,0 +1,37 @@
+[project]
+name = "dotkoma"
+version = "0.1.0"
+description = "16x16 pixel-art loop dataset pipeline (Pixel Art Atlas -> Wan2.2 -> 16x16 RGBA loops)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "av>=18.1.0",
+    "huggingface-hub>=2.4.0",
+    "numpy>=2.4.6",
+    "pillow>=13.0.0",
+    "pyarrow>=26.0.1",
+]
+
+[project.scripts]
+dotkoma = "dotkoma:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
