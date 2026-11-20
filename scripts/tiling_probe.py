@@ -136,7 +136,21 @@ def split(run: Path) -> None:
             link = out / "raw" / f"{mid}.mp4"
             if not link.exists():
                 os.symlink((run / "raw" / f"{j['job_id']}.mp4").resolve(), link)
-            members.append({**m, "job_id": mid, "layout": slot, "key_color": j["key_color"]})
+            # record what actually generated this sample: the tiled prompt and seed; the
+            # single-sprite job's own prompt and seed are kept for reference
+            members.append(
+                {
+                    **m,
+                    "job_id": mid,
+                    "layout": slot,
+                    "key_color": j["key_color"],
+                    "prompt": j["prompt"],
+                    "seed": j["seed"],
+                    "tile_job_id": j["job_id"],
+                    "single_prompt": m["prompt"],
+                    "single_seed": m["seed"],
+                }
+            )
             append_jsonl(out / "results.jsonl", {"job_id": mid, "status": "ok"})
     if base and not (out / "inputs").exists():
         os.symlink((base / "inputs").resolve(), out / "inputs")
