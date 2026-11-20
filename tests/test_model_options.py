@@ -221,9 +221,12 @@ def _resident_backend():
     return b
 
 
-def test_resident_prepare_encodes_once_with_the_pipeline_length():
+def test_resident_prepare_encodes_once_with_the_pipeline_length(monkeypatch):
     import pytest
 
+    import dotkoma.generate as gen
+
+    monkeypatch.setattr(gen, "_trim", lambda emb, torch: emb)  # covered separately below
     b = _resident_backend()
     pipe = b.pipe
     jobs = [{"prompt": p, "negative_prompt": ""} for p in ("a", "b", "a")]
@@ -234,6 +237,9 @@ def test_resident_prepare_encodes_once_with_the_pipeline_length():
     b.prepare(jobs[:1])  # known prompts: fine
     with pytest.raises(RuntimeError, match="after the experts became resident"):
         b.prepare([{"prompt": "new", "negative_prompt": ""}])
+    monkeypatch.setattr(gen, "MAX_RESIDENT_PROMPTS", 1)
+    with pytest.raises(RuntimeError, match="split the jobs"):
+        _resident_backend().prepare(jobs)
 
 
 def test_resident_placement_is_part_of_job_id(smoke_cfg):
@@ -257,3 +263,49 @@ def test_resident_placement_is_part_of_job_id(smoke_cfg):
     assert {j["job_id"] for j in read_jsonl(prepare(cfg))}.isdisjoint(before)
     with pytest.raises(ValueError, match="config"):
         load_backend({"backend": "diffusers", "id": "x", "revision": "y"}, "resident")
+
+
+def test_trimmed_embeddings_restore_exactly():
+    import numpy as np
+
+    class T:  # the few torch ops _trim/_padded use, on numpy
+        def __init__(self, a):
+            self.a = a
+            self.shape = a.shape
+
+        def __getitem__(self, k):
+            return T(self.a[k])
+
+        def __ne__(self, v):
+            return T(self.a != v)
+
+        def any(self, dim):
+            return T(self.a.any(axis=dim))
+
+        def nonzero(self):
+            return T(np.nonzero(self.a)[0])
+
+        def __len__(self):
+            return len(self.a)
+
+        def __int__(self):
+            return int(self.a)
+
+        def clone(self):
+            return T(self.a.copy())
+
+        def new_zeros(self, *shape):
+            return T(np.zeros(shape, self.a.dtype))
+
+    class FakeTorch:
+        @staticmethod
+        def cat(xs, dim):
+            return T(np.concatenate([x.a for x in xs], axis=dim))
+
+    from dotkoma.generate import _padded, _trim
+
+    emb = np.zeros((1, 512, 8), np.float32)
+    emb[0, :37] = np.random.default_rng(0).normal(size=(37, 8))
+    trimmed = _trim(T(emb), FakeTorch)
+    assert trimmed.shape == (1, 37, 8)
+    np.testing.assert_array_equal(_padded(trimmed, 512, FakeTorch).a, emb)

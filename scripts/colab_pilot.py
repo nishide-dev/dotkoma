@@ -126,6 +126,10 @@ def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / "src"))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    names = [r.name for r in a.run_dir]
+    if a.sync_dir and len(set(names)) != len(names):
+        # each run syncs to <sync-dir>/<name>; equal names would overwrite each other
+        sys.exit(f"run dirs need distinct names when syncing: {names}")
     for run_dir in a.run_dir:
         print(json.dumps(record_env(run_dir)), flush=True)
     if a.stage == "plan":

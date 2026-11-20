@@ -160,7 +160,13 @@ class DiffusersWanBackend:
         import inspect
 
         max_len = inspect.signature(pipe.__call__).parameters["max_sequence_length"].default
+        if len(todo) > MAX_RESIDENT_PROMPTS:
+            raise RuntimeError(
+                f"{len(todo)} distinct prompts exceed {MAX_RESIDENT_PROMPTS} for one resident "
+                "load (host RAM); split the jobs into several runs/sessions"
+            )
         pipe.text_encoder.to("cuda")
+        negatives: dict[str, Any] = {}
         with torch.inference_mode():
             for prompt, negative in sorted(todo):
                 pos, neg = pipe.encode_prompt(
@@ -170,8 +176,12 @@ class DiffusersWanBackend:
                     max_sequence_length=max_len,
                     device=torch.device("cuda"),
                 )
-                self.prompt_cache[(prompt, negative)] = (pos.cpu(), neg.cpu())
+                # one copy per distinct negative prompt; drop the zero padding (restored
+                # exactly in _padded) so thousands of prompts fit in host RAM
+                neg = negatives.setdefault(negative, _trim(neg.cpu(), torch))
+                self.prompt_cache[(prompt, negative)] = (_trim(pos.cpu(), torch), neg)
         pipe.text_encoder.to("cpu")
+        self.max_len = max_len
         pipe.text_encoder = None  # so the pipeline's execution device is the GPU
         for name in ("transformer", "transformer_2", "vae", "image_encoder"):
             module = getattr(pipe, name, None)
@@ -206,7 +216,10 @@ class DiffusersWanBackend:
 
         if self.mode == "resident":
             pos, neg = self.prompt_cache[(job["prompt"], job["negative_prompt"] or "")]
-            text = {"prompt_embeds": pos.to("cuda"), "negative_prompt_embeds": neg.to("cuda")}
+            text = {
+                "prompt_embeds": _padded(pos, self.max_len, self.torch).to("cuda"),
+                "negative_prompt_embeds": _padded(neg, self.max_len, self.torch).to("cuda"),
+            }
         else:
             text = {"prompt": job["prompt"], "negative_prompt": job["negative_prompt"] or None}
         out = self.pipe(
@@ -290,6 +303,26 @@ def _torch_runtime(torch) -> dict[str, Any]:
         p = torch.cuda.get_device_properties(0)
         info.update(gpu=p.name, vram_gb=round(p.total_memory / 2**30, 1), cuda=torch.version.cuda)
     return info
+
+
+# Distinct prompts encoded up front by one resident backend. Trimmed embeddings are
+# ~4096 x 2 bytes per token; at ~100 tokens a prompt this bounds the cache to a few GB.
+MAX_RESIDENT_PROMPTS = 5000
+
+
+def _trim(emb, torch):
+    """(1, L, D) embedding without its trailing all-zero padding rows."""
+    nonzero = (emb[0] != 0).any(dim=-1).nonzero()
+    n = int(nonzero[-1]) + 1 if len(nonzero) else 0
+    return emb[:, :n].clone()
+
+
+def _padded(emb, length: int, torch):
+    """Undo _trim: zero rows back up to ``length`` (Wan pads with zeros)."""
+    pad = length - emb.shape[1]
+    if pad <= 0:
+        return emb
+    return torch.cat([emb, emb.new_zeros(emb.shape[0], pad, emb.shape[2])], dim=1)
 
 
 def offload_mode(offload: bool | str) -> str:
