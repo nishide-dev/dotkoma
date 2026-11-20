@@ -186,6 +186,10 @@ def prepare(cfg: Config) -> Path:
                         },
                         "reference": {"layout": layout.to_dict(), "key_color": key},
                     }
+                    if plan_info:
+                        # new kind of job: tie it to the exact pixels (template jobs keep
+                        # their existing ids)
+                        gen_inputs["sprite_sha256"] = sprite_digest(sp.rgba)
                     jid = job_id(gen_inputs)
                     if jid in seen:
                         continue
@@ -258,19 +262,22 @@ def _planned_prompt(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, r
     """(prompt, plan info) from the VLM's plan, or (None, None) if there is none to use."""
     source = {**src, "row_id": sp.row_id}
     act = {"name": action.name, "description": action.description}
-    rid = request_id(source, act, book.spec)
+    instruction = book.spec["instruction"].format(
+        subject=sp.subject,
+        caption=sp.caption,
+        action=action.name,
+        description=action.description,
+    )
+    digest = sprite_digest(sp.rgba)
+    rid = request_id(source, act, book.spec, instruction, digest)
     book.requests[rid] = {
         "request_id": rid,
         "source": {**source, "subject": sp.subject, "caption": sp.caption},
         "action": act,
         "input_png": src_png.relative_to(run).as_posix(),
+        "sprite_sha256": digest,
         "planner": book.spec,
-        "instruction": book.spec["instruction"].format(
-            subject=sp.subject,
-            caption=sp.caption,
-            action=action.name,
-            description=action.description,
-        ),
+        "instruction": instruction,
     }
     ans = book.answers.get(rid)
     if not ans or ans["status"] != "ok":

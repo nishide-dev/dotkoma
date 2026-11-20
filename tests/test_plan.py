@@ -148,3 +148,67 @@ def test_sample_records_the_plan(smoke_cfg):
     finalize(cfg.run_dir, cfg.finalize)
     s = json.loads((cfg.run_dir / "final" / j["job_id"] / "sample.json").read_text())
     assert s["prompt_method"] == "vlm" and s["plan"]["request_id"] == j["plan"]["request_id"]
+
+
+def _edit_slime(tmp_path):
+    from dotkoma.imaging import load_rgba, save_png
+
+    png = tmp_path / "tests" / "fixtures" / "sprites" / "slime.png"
+    rgba = load_rgba(png)
+    rgba[rgba[..., 3] > 0, 0] ^= 1  # recolour in place: same row_id and path
+    save_png(png, rgba)
+
+
+def test_edited_sprite_or_caption_needs_a_new_plan(smoke_cfg, tmp_path):
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    rid = lambda: {q["request_id"] for q in read_jsonl(cfg.run_dir / "plan_requests.jsonl")}  # noqa: E731
+    first = rid()
+    _edit_slime(tmp_path)
+    prepare(cfg)
+    second = rid()
+    assert first.isdisjoint(second)
+    manifest = tmp_path / "tests" / "fixtures" / "sprites" / "manifest.jsonl"
+    manifest.write_text(manifest.read_text().replace('"a slime"', '"a green slime"'))
+    prepare(cfg)
+    assert rid().isdisjoint(second)
+
+
+def test_edited_sprite_gets_a_new_vlm_job_even_with_the_same_text(smoke_cfg, tmp_path):
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())
+    before = _vlm_jobs(cfg)[0]
+    _edit_slime(tmp_path)
+    prepare(cfg)
+    plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())  # same motion_text
+    after = _vlm_jobs(cfg)[0]
+    assert after["prompt"] == before["prompt"] and after["job_id"] != before["job_id"]
+
+
+def test_a_later_failure_does_not_hide_an_answer(smoke_cfg):
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())
+    ok = read_jsonl(cfg.run_dir / "plans.jsonl")[-1]
+    append_jsonl(cfg.run_dir / "plans.jsonl", {"request_id": ok["request_id"], "status": "failed"})
+    assert len(_vlm_jobs(cfg)) == 1
+    assert plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())["pending"] == 0
+
+
+def test_plan_needs_the_request_file(smoke_cfg, tmp_path):
+    with pytest.raises(FileNotFoundError):
+        plan(tmp_path / "nowhere", planner_factory=lambda spec: FakePlanner())
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "plan_requests.jsonl").write_text("")
+    assert plan(empty, planner_factory=lambda spec: FakePlanner())["pending"] == 0
+
+
+def test_plan_syncs_each_answer(smoke_cfg, tmp_path):
+    cfg = _vlm_cfg(smoke_cfg)
+    prepare(cfg)
+    sync = tmp_path / "drive"
+    plan(cfg.run_dir, sync_dir=sync, planner_factory=lambda spec: FakePlanner())
+    assert (sync / "plans.jsonl").read_bytes() == (cfg.run_dir / "plans.jsonl").read_bytes()
+    assert len(read_jsonl(sync / "plans.jsonl")) == 2

@@ -30,6 +30,7 @@ import json
 import logging
 import platform
 import re
+import shutil
 import time
 import traceback
 from collections.abc import Callable
@@ -89,8 +90,19 @@ def planner_spec(p) -> dict[str, Any]:
     }
 
 
-def request_id(source: dict, action: dict, spec: dict) -> str:
-    return stable_hash({"source": source, "action": action, "planner": spec}, 16)
+def request_id(source: dict, action: dict, spec: dict, instruction: str, sprite_sha256: str) -> str:
+    """Everything the VLM sees or that changes its answer: the exact pixels and the
+    rendered instruction (subject and caption included), plus the planner settings."""
+    return stable_hash(
+        {
+            "source": source,
+            "action": action,
+            "planner": spec,
+            "instruction": instruction,
+            "sprite_sha256": sprite_sha256,
+        },
+        16,
+    )
 
 
 def sprite_image(rgba: np.ndarray, scale: int, bg: tuple[int, int, int] = (255, 255, 255)):
@@ -209,16 +221,27 @@ def load_planner(spec: dict) -> Planner:
 
 
 def latest_plans(run_dir: Path) -> dict[str, dict]:
+    """Per request_id: the last ``ok`` record if there is one, else the last record.
+
+    A failed retry after a success (e.g. logs merged from resumed runs) must not
+    hide the answer that already exists.
+    """
     out: dict[str, dict] = {}
     for r in read_jsonl(run_dir / "plans.jsonl"):
-        out[r["request_id"]] = r
+        prev = out.get(r["request_id"])
+        if r["status"] == "ok" or not prev or prev["status"] != "ok":
+            out[r["request_id"]] = r
     return out
 
 
 def pending_requests(run_dir: Path, retry_failed: bool = False) -> list[dict]:
+    path = run_dir / "plan_requests.jsonl"
+    if not path.exists():
+        # e.g. plan run before prepare, or the file was not uploaded to the VM
+        raise FileNotFoundError(f"{path} not found: run prepare first and upload it")
     last = latest_plans(run_dir)
     out = []
-    for q in read_jsonl(run_dir / "plan_requests.jsonl"):
+    for q in read_jsonl(path):
         r = last.get(q["request_id"])
         if r and r["status"] == "ok":
             continue
@@ -233,6 +256,7 @@ def plan(
     *,
     limit: int | None = None,
     retry_failed: bool = False,
+    sync_dir: str | Path | None = None,
     planner_factory: Callable[[dict], Planner] = load_planner,
 ) -> dict[str, int]:
     run_dir = Path(run_dir)
@@ -277,6 +301,9 @@ def plan(
                 log.error("plan %s failed: %s", q["request_id"], rec["error"])
             rec["seconds"] = round(time.monotonic() - t1, 2)
             append_jsonl(run_dir / "plans.jsonl", rec)
+            if sync_dir:  # keep finished answers if the VM goes away
+                Path(sync_dir).mkdir(parents=True, exist_ok=True)
+                shutil.copy2(run_dir / "plans.jsonl", Path(sync_dir) / "plans.jsonl")
             counts["pending"] -= 1
         if hasattr(planner, "close"):
             planner.close()

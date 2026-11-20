@@ -124,7 +124,7 @@ def main() -> None:
     if a.stage == "plan":
         from dotkoma.plan import plan
 
-        counts = plan(a.run_dir, limit=a.limit, retry_failed=a.retry_failed)
+        counts = plan(a.run_dir, limit=a.limit, retry_failed=a.retry_failed, sync_dir=a.sync_dir)
         print(json.dumps(counts), flush=True)
         return
     from dotkoma.generate import generate
