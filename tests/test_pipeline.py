@@ -170,3 +170,148 @@ def test_prompt_variants_become_separate_jobs_with_shared_seed(smoke_cfg):
     assert len({j["seed"] for j in hops}) == 1
     assert all(j["prompt_method"] == "template" for j in jobs)
     assert len(jobs) == 7
+
+
+def test_background_drift_after_first_frame_is_keyed_out(smoke_cfg):
+    """Wan reproduces frame 0 exactly, then shifts the key colour slightly."""
+    import dataclasses
+
+    from dotkoma.generate import FakeBackend
+    from dotkoma.imaging import hex_to_rgb
+
+    run = smoke_cfg.run_dir
+    prepare(smoke_cfg)
+    fake = FakeBackend()
+
+    def drifting(model, offload):
+        def call(job, ref):
+            frames = fake(job, ref).astype(np.int16)
+            key = np.array(hex_to_rgb(job["key_color"]), np.int16)
+            bgmask = (frames == key).all(axis=-1)
+            shifted = np.clip(key + np.array([90, -90, 90]), 0, 255)  # > bg_tolerance away
+            frames[1:][bgmask[1:]] = shifted
+            return frames.astype(np.uint8)
+
+        call.info = fake.info
+        return call
+
+    generate(run, backend_factory=drifting)
+
+    def drift(index):
+        jid = _by_action(index, "ghost", "bob")["job_id"]
+        return json.loads((run / "final" / jid / "sample.json").read_text())["checks"][
+            "background_drift"
+        ]
+
+    per_frame = finalize(run, smoke_cfg.finalize)
+    assert "background_unstable" not in _by_action(per_frame, "ghost", "bob")["flags"]
+    assert drift(per_frame) > 60
+
+    first_only = dataclasses.replace(smoke_cfg.finalize, background="first_frame")
+    stale = finalize(run, first_only)
+    assert "background_unstable" in _by_action(stale, "ghost", "bob")["flags"]
+    assert drift(stale) > 60  # drift is measured even when keying uses frame 0
+
+
+def test_memory_is_released_after_leaving_the_exception_handler(smoke_cfg):
+    import sys
+
+    run = smoke_cfg.run_dir
+    prepare(smoke_cfg)
+    fake = FakeBackend()
+    released = []
+
+    class Flaky:
+        info = fake.info
+
+        def __call__(self, job, ref):
+            if job["requested_action"] == "hop":
+                raise RuntimeError("CUDA out of memory")
+            return fake(job, ref)
+
+        def release_memory(self):
+            released.append(sys.exc_info()[0])  # None once the handler has exited
+
+    counts = generate(run, backend_factory=lambda m, o: Flaky())
+    assert counts == {"ok": 5, "failed": 1, "pending": 0}
+    assert released == [None]
+
+
+def test_vae_decode_mode_is_part_of_job_id(smoke_cfg):
+    import dataclasses
+
+    tiled = {j["job_id"] for j in read_jsonl(prepare(smoke_cfg))}
+    full_cfg = dataclasses.replace(
+        smoke_cfg, generation=dataclasses.replace(smoke_cfg.generation, vae_tiling=False)
+    )
+    full = read_jsonl(prepare(full_cfg))
+    assert tiled.isdisjoint(j["job_id"] for j in full)
+    assert all(j["model"]["vae_decode"] == "full" for j in full)
+
+
+def test_each_model_spec_gets_its_own_backend(smoke_cfg):
+    import dataclasses
+
+    run = smoke_cfg.run_dir
+    tiled = read_jsonl(prepare(smoke_cfg))
+    full_cfg = dataclasses.replace(
+        smoke_cfg, generation=dataclasses.replace(smoke_cfg.generation, vae_tiling=False)
+    )
+    full = read_jsonl(prepare(full_cfg))
+    from dotkoma.records import write_jsonl_atomic
+
+    write_jsonl_atomic(run / "jobs.jsonl", tiled + full)
+    seen = []
+
+    def factory(model, offload):
+        b = FakeBackend()
+        mode = model.get("vae_decode", "tiled")
+
+        def call(job, ref):
+            seen.append((job["model"].get("vae_decode", "tiled"), mode))
+            return b(job, ref)
+
+        call.info = b.info
+        return call
+
+    generate(run, backend_factory=factory)
+    assert len(seen) == 12 and all(job_mode == backend_mode for job_mode, backend_mode in seen)
+
+
+def test_previous_backend_is_freed_before_the_next_loads(smoke_cfg):
+    import dataclasses
+    import weakref
+
+    from dotkoma.records import write_jsonl_atomic
+
+    run = smoke_cfg.run_dir
+    tiled = read_jsonl(prepare(smoke_cfg))
+    full_cfg = dataclasses.replace(
+        smoke_cfg, generation=dataclasses.replace(smoke_cfg.generation, vae_tiling=False)
+    )
+    write_jsonl_atomic(run / "jobs.jsonl", tiled + read_jsonl(prepare(full_cfg)))
+
+    alive = []
+
+    class Backend:
+        info = FakeBackend().info
+
+        def __init__(self):
+            self.fake = FakeBackend()
+
+        def __call__(self, job, ref):
+            if job["requested_action"] == "hop":
+                raise RuntimeError("CUDA out of memory")  # exercise release_memory too
+            return self.fake(job, ref)
+
+        def release_memory(self):
+            pass
+
+    def factory(model, offload):
+        assert all(r() is None for r in alive), "previous backend still referenced"
+        b = Backend()
+        alive.append(weakref.ref(b))
+        return b
+
+    generate(run, backend_factory=factory)
+    assert len(alive) == 2

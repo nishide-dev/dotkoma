@@ -12,9 +12,11 @@ Backends:
 
 from __future__ import annotations
 
+import gc
 import logging
 import platform
 import shutil
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -25,7 +27,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from .imaging import Layout, hex_to_rgb, load_rgba
-from .records import append_jsonl, latest_by_job, read_jsonl
+from .records import append_jsonl, canonical_json, latest_by_job, read_jsonl
 from .video import write_mp4
 
 log = logging.getLogger(__name__)
@@ -89,12 +91,13 @@ def _shift(img: np.ndarray, dy: int, dx: int, fill: np.ndarray) -> np.ndarray:
 class DiffusersWanBackend:
     """Wan2.2 image->video through diffusers. Not exercised by the CPU test suite."""
 
-    def __init__(self, model_id: str, revision: str, offload: bool = True) -> None:
+    def __init__(self, model: dict, offload: bool = True) -> None:
         import torch
         from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
         from huggingface_hub import HfApi
 
-        resolved = HfApi().model_info(model_id, revision=revision).sha
+        model_id = model["id"]
+        resolved = HfApi().model_info(model_id, revision=model["revision"]).sha
         vae = AutoencoderKLWan.from_pretrained(
             model_id, subfolder="vae", torch_dtype=torch.float32, revision=resolved
         )
@@ -105,14 +108,28 @@ class DiffusersWanBackend:
             pipe.enable_model_cpu_offload()
         else:
             pipe.to("cuda")
+        # Decoding 49 frames at 1280x704 in one pass needs more than an L4's 22 GB
+        # (observed OOM in vae.decode); tiled decoding bounds peak memory. The mode is
+        # part of job_id via model["vae_decode"] (absent = tiled).
+        vae_tiling = model.get("vae_decode", "tiled") == "tiled"
+        if vae_tiling:
+            pipe.vae.enable_tiling()
         self.pipe, self.torch = pipe, torch
         self.info = {
             "backend": "diffusers",
             "model_id": model_id,
             "model_revision": resolved,
             "offload": offload,
+            "vae_tiling": vae_tiling,
             **_torch_runtime(torch),
         }
+
+    def release_memory(self) -> None:
+        """Drop cached CUDA blocks after a failed job so the next job starts clean."""
+        import gc
+
+        gc.collect()
+        self.torch.cuda.empty_cache()
 
     def __call__(self, job: dict, reference_rgb: np.ndarray) -> np.ndarray:
         from PIL import Image
@@ -148,7 +165,7 @@ def load_backend(model: dict, offload: bool) -> Backend:
     if model["backend"] == "fake":
         return FakeBackend()
     if model["backend"] == "diffusers":
-        return DiffusersWanBackend(model["id"], model["revision"], offload=offload)
+        return DiffusersWanBackend(model, offload=offload)
     raise ValueError(f"unknown backend {model['backend']!r}")
 
 
@@ -198,12 +215,12 @@ def generate(
         return counts
 
     results = run_dir / "results.jsonl"
-    groups: dict[tuple, list[dict]] = {}
-    for j in todo:
-        m = j["model"]
-        groups.setdefault((m["backend"], m["id"], m["revision"]), []).append(j)
+    groups: dict[str, list[dict]] = {}
+    for j in todo:  # one model load per distinct model spec (everything that is in job_id)
+        groups.setdefault(canonical_json(j["model"]), []).append(j)
 
-    for (_, model_id, _), jobs in groups.items():
+    for jobs in groups.values():
+        model_id = jobs[0]["model"]["id"]
         t0 = time.monotonic()
         backend = backend_factory(jobs[0]["model"], offload)
         load_s = round(time.monotonic() - t0, 2)
@@ -221,6 +238,7 @@ def generate(
                 "encode": {"pix_fmt": pix_fmt, "crf": crf},
             }
             t1 = time.monotonic()
+            failed = False
             try:
                 ref = load_rgba(run_dir / j["reference_png"])[..., :3]
                 frames = backend(j, ref)
@@ -245,10 +263,25 @@ def generate(
                 )
                 counts["failed"] += 1
                 log.error("job %s failed: %s", jid, rec["error"])
+                failed = True
+            # Outside the handler: the exception and its traceback (which pin the failed
+            # inference's GPU tensors) are gone by now, so the memory can actually be freed.
+            if failed and hasattr(backend, "release_memory"):
+                backend.release_memory()
             rec["generate_seconds"] = round(time.monotonic() - t1, 2)
             rec["finished_at"] = _now()
             append_jsonl(results, rec)
             if sync_dir:
                 shutil.copy2(results, Path(sync_dir) / "results.jsonl")
             counts["pending"] -= 1
+        # Drop this model before the next group loads, so two pipelines never coexist.
+        del backend
+        _free_memory()
     return counts
+
+
+def _free_memory() -> None:
+    gc.collect()
+    torch = sys.modules.get("torch")  # only if a GPU backend already imported it
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()

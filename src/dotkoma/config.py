@@ -68,6 +68,9 @@ class GenerationConfig:
     negative_prompt: str = ""
     seed: int | None = None  # fixed seed; None derives one per (row_id, action)
     offload: bool = True
+    # Tiled VAE decoding changes the decoded pixels slightly. Tiled is the baseline
+    # (every pilot video was decoded tiled); full decoding adds "vae_decode" to job_id.
+    vae_tiling: bool = True
     # raw video encoding; yuv444p avoids chroma blur at sprite edges
     pix_fmt: str = "yuv444p"
     crf: int = 10
@@ -92,6 +95,7 @@ class FinalizeConfig:
     min_frames: int = 4
     max_frames: int = 8
     bg_tolerance: float = 60.0  # RGB distance to the measured background colour
+    background: str = "per_frame"  # "per_frame" | "first_frame": where the key colour is measured
     coverage_threshold: float = 0.5  # foreground share of a cell to become opaque
     palette: str = "source"  # "source": snap colours to the sprite's palette, "none"
     preview_scale: int = 8
@@ -99,6 +103,8 @@ class FinalizeConfig:
     loop_jump_factor: float = 2.5
     edge_cut_fraction: float = 0.02
     background_unstable_fraction: float = 0.05
+    identity_drift_threshold: float = 0.3  # see finalize.identity_drift
+    identity_max_shift: int = 4
 
 
 @dataclass(frozen=True)
@@ -236,5 +242,7 @@ def _validate(cfg: Config) -> None:
     f = cfg.finalize
     if not (f.min_frames <= f.num_frames <= f.max_frames):
         raise ConfigError("finalize.num_frames must lie in [min_frames, max_frames]")
+    if f.background not in ("per_frame", "first_frame"):
+        raise ConfigError(f"unknown finalize.background {f.background!r}")
     if f.palette not in ("source", "none"):
         raise ConfigError(f"unknown finalize.palette {f.palette!r}")
