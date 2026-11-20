@@ -34,6 +34,16 @@ GPU_DEPS = [
 RECORD = ["torch", "diffusers", "transformers", "accelerate", "av", "huggingface_hub", "numpy"]
 
 
+def require_torch() -> None:
+    """PyTorch must come from the environment (Colab ships a CUDA build); never pip it here."""
+    try:
+        import torch
+    except ImportError:
+        sys.exit("PyTorch is not installed. Use a GPU runtime that provides a CUDA build of torch.")
+    if not torch.cuda.is_available():
+        sys.exit(f"torch {torch.__version__} is installed but no CUDA device is available.")
+
+
 def ensure_deps() -> None:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *GPU_DEPS])
 
@@ -69,6 +79,7 @@ def main() -> None:
     p.add_argument("--skip-install", action="store_true")
     a = p.parse_args()
 
+    require_torch()
     if not a.skip_install:
         ensure_deps()
     repo = Path(__file__).resolve().parents[1]

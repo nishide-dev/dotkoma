@@ -13,20 +13,26 @@ The dataset is meant for training small pixel-art video models that animate a st
 ```
 prepare   (CPU)  pick sprites, build reference images        -> jobs.jsonl
 generate  (GPU)  image-to-video for each job                 -> raw/<job_id>.mp4
-finalize  (CPU)  pick one cycle, key out the background,     -> 16×16 RGBA frames,
+finalize  (CPU)  select loop frames, key out the background, -> 16×16 RGBA frames,
                  reduce to 16×16, run quality checks            timing, preview GIF
 ```
 
 - The stages communicate only through files, so GPU work can run on a remote machine such as Colab while everything else runs locally.
-- Each job ID is a hash of every input that affects the generated video. Re-running a stage resumes where it stopped and never overwrites finished work with partial output.
+- Each job ID is a hash of every input that affects the generated video.
+- Re-running `generate` processes only unfinished jobs. Failed jobs are skipped unless `--retry-failed` is passed. Files are written atomically, so an interrupted run never leaves partial output that looks complete.
+- `finalize` rebuilds samples from the raw videos. Post-processing can be changed and re-run without regenerating anything.
+- By default `finalize` takes evenly spaced frames over the whole clip. A frame window or explicit frame indices can be set per clip in `selections.jsonl`.
 - Every frame of a clip is reduced with the same grid and palette rules, so real motion such as a hop is preserved rather than re-centred away.
-- Each sample records its source sprite (`row_id`, dataset revision), the requested action, the prompt, the seed and the model revision.
+- Every sample can be traced back to its origin through its `job_id`:
+  - `sample.json` holds the source sprite (`row_id`, dataset revision) and the requested action.
+  - `jobs.jsonl` holds the prompt, seed and inference settings.
+  - `results.jsonl` holds the resolved model revision and runtime.
 - Automatic checks (frame count, empty or identical frames, loop seams, cropped motion, unstable background) are kept separate from human review decisions.
 
 ## Requirements
 
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-- A CUDA GPU for the `generate` stage only. The local environment does not install PyTorch.
+- A CUDA GPU with PyTorch already installed, for the `generate` stage only. Google Colab GPU runtimes ship with it. The local environment does not install PyTorch.
 
 ## Quick start
 
@@ -61,7 +67,7 @@ Copy `src/`, `scripts/` and `work/pilot/` to a GPU machine and run:
 python scripts/colab_pilot.py work/pilot
 ```
 
-This installs the GPU dependencies on that machine and records the versions it used. Bring `work/pilot/raw/` and `work/pilot/results.jsonl` back, then run:
+This installs Diffusers and the other generation dependencies on top of the existing PyTorch, and records the versions it used in `colab_env.json`. Bring `work/pilot/raw/`, `work/pilot/results.jsonl` and `work/pilot/colab_env.json` back, then run:
 
 ```sh
 uv run dotkoma finalize configs/pilot.toml
@@ -89,6 +95,10 @@ final/<job_id>/
   sample.json        durations (ms), loop flag, source sprite, action, prompt variant, checks
   preview.gif        transparent looping preview, regenerated from the frames
 ```
+
+## Further reading
+
+- [`docs/pipeline.md`](docs/pipeline.md): file contracts, frame selection overrides and quality-check flags (developer notes, in Japanese).
 
 ## License
 
