@@ -205,7 +205,8 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
 
     # one palette for the whole loop, decided after seeing every frame
     palette, added = loop_palette(frames, source, cfg)
-    frames = [snap_to_palette(f, palette) for f in frames]
+    radius = cfg.new_color_distance / 2  # the grouping radius of stable_new_colors
+    frames = [snap_to_palette(f, palette, added, radius) for f in frames]
 
     checks = run_checks(frames, source, edge, border, cfg)
     checks["background_drift"] = round(drift, 1)
@@ -222,7 +223,7 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
 def loop_palette(
     frames: list[np.ndarray], source: np.ndarray, cfg: FinalizeConfig
 ) -> tuple[np.ndarray, np.ndarray]:
-    """(palette to snap every frame to, the colours added beyond the source's)."""
+    """(source-derived palette, colours added beyond it) for every frame of the loop."""
     none = np.zeros((0, 3), np.uint8)
     if cfg.palette == "none":
         return none, none
@@ -236,7 +237,7 @@ def loop_palette(
         cfg.new_color_min_frame_share,
         cfg.new_color_min_pixels,
     )
-    return np.concatenate([base, added]), added
+    return base, added
 
 
 def finalize_pixel_ops_job(run_dir: Path, job: dict, cfg: FinalizeConfig) -> dict[str, Any]:

@@ -154,15 +154,35 @@ def reduce_frame(
     return out
 
 
-def snap_to_palette(rgba: np.ndarray, palette: np.ndarray) -> np.ndarray:
-    """Map opaque pixels to the nearest colour of a fixed (global) palette."""
-    if len(palette) == 0:
+def snap_to_palette(
+    rgba: np.ndarray,
+    palette: np.ndarray,
+    added: np.ndarray | None = None,
+    added_radius: float = 0.0,
+) -> np.ndarray:
+    """Map opaque pixels to the nearest colour of a fixed (global) palette.
+
+    ``added`` colours (see ``stable_new_colors``) only capture pixels within
+    ``added_radius`` of them, the radius their group was formed with; anything else
+    goes to the nearest ``palette`` colour, so a one-off colour is not pulled onto
+    an added one just because it happens to be the closest.
+    """
+    added = np.zeros((0, 3), np.uint8) if added is None else added
+    if len(palette) == 0 and len(added) == 0:
         return rgba
     out = rgba.copy()
     opaque = out[..., 3] > 0
     px = out[opaque][:, :3].astype(np.float32)
-    d = np.linalg.norm(px[:, None, :] - palette[None, :, :].astype(np.float32), axis=-1)
-    out[..., :3][opaque] = palette[np.argmin(d, axis=1)]
+    if len(palette):
+        d = np.linalg.norm(px[:, None, :] - palette[None, :, :].astype(np.float32), axis=-1)
+        snapped, d_base = palette[np.argmin(d, axis=1)], d.min(axis=1)
+    else:  # nothing to fall back to: keep the pixel unless an added colour claims it
+        snapped, d_base = px.round().astype(np.uint8), np.full(len(px), np.inf)
+    if len(added):
+        d = np.linalg.norm(px[:, None, :] - added[None, :, :].astype(np.float32), axis=-1)
+        take = (d.min(axis=1) <= added_radius) & (d.min(axis=1) < d_base)
+        snapped[take] = added[np.argmin(d, axis=1)][take]
+    out[..., :3][opaque] = snapped
     return out
 
 
@@ -250,10 +270,22 @@ def write_gif(
     path: str | Path, frames: list[np.ndarray], durations_ms: list[int], scale: int
 ) -> None:
     """Transparent looping GIF with a single shared palette (index 0 = transparent)."""
-    colors = sorted({tuple(c) for f in frames for c in f[f[..., 3] > 0][:, :3].tolist()})
-    if len(colors) > 255:
-        raise ValueError(f"{len(colors)} colours exceed the GIF palette")
+    counts: dict[tuple, int] = {}
+    for f in frames:
+        for c in f[f[..., 3] > 0][:, :3].tolist():
+            counts[tuple(c)] = counts.get(tuple(c), 0) + 1
+    colors = sorted(counts)
     lut = {c: k + 1 for k, c in enumerate(colors)}
+    if len(colors) > 255:
+        # preview only (the PNG frames keep every colour): keep the 255 most used
+        # colours and show the rest as the nearest of them
+        kept = sorted(sorted(counts, key=lambda c: (-counts[c], c))[:255])
+        k_arr = np.array(kept, np.float32)
+        lut = {
+            c: int(np.argmin(np.linalg.norm(k_arr - np.array(c, np.float32), axis=1))) + 1
+            for c in colors
+        }
+        colors = kept
     flat = [0, 0, 0]
     for c in colors:
         flat.extend(c)

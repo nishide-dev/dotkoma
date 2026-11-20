@@ -323,3 +323,10 @@ def _validate(cfg: Config) -> None:
                 )
     if f.palette not in ("source+stable", "source", "none"):
         raise ConfigError(f"unknown finalize.palette {f.palette!r}")
+    if not (isinstance(f.new_color_distance, int | float) and 0 < f.new_color_distance <= 442):
+        raise ConfigError("finalize.new_color_distance must be in (0, 442] (RGB distance)")
+    share = f.new_color_min_frame_share
+    if not (isinstance(share, int | float) and 0 < share <= 1):
+        raise ConfigError("finalize.new_color_min_frame_share must be in (0, 1]")
+    if not (isinstance(f.new_color_min_pixels, int) and 1 <= f.new_color_min_pixels <= 256):
+        raise ConfigError("finalize.new_color_min_pixels must be an int in [1, 256]")
