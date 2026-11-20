@@ -276,3 +276,42 @@ def test_each_model_spec_gets_its_own_backend(smoke_cfg):
 
     generate(run, backend_factory=factory)
     assert len(seen) == 12 and all(job_mode == backend_mode for job_mode, backend_mode in seen)
+
+
+def test_previous_backend_is_freed_before_the_next_loads(smoke_cfg):
+    import dataclasses
+    import weakref
+
+    from dotkoma.records import write_jsonl_atomic
+
+    run = smoke_cfg.run_dir
+    tiled = read_jsonl(prepare(smoke_cfg))
+    full_cfg = dataclasses.replace(
+        smoke_cfg, generation=dataclasses.replace(smoke_cfg.generation, vae_tiling=False)
+    )
+    write_jsonl_atomic(run / "jobs.jsonl", tiled + read_jsonl(prepare(full_cfg)))
+
+    alive = []
+
+    class Backend:
+        info = FakeBackend().info
+
+        def __init__(self):
+            self.fake = FakeBackend()
+
+        def __call__(self, job, ref):
+            if job["requested_action"] == "hop":
+                raise RuntimeError("CUDA out of memory")  # exercise release_memory too
+            return self.fake(job, ref)
+
+        def release_memory(self):
+            pass
+
+    def factory(model, offload):
+        assert all(r() is None for r in alive), "previous backend still referenced"
+        b = Backend()
+        alive.append(weakref.ref(b))
+        return b
+
+    generate(run, backend_factory=factory)
+    assert len(alive) == 2

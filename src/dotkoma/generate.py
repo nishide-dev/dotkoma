@@ -12,9 +12,11 @@ Backends:
 
 from __future__ import annotations
 
+import gc
 import logging
 import platform
 import shutil
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -264,12 +266,22 @@ def generate(
                 failed = True
             # Outside the handler: the exception and its traceback (which pin the failed
             # inference's GPU tensors) are gone by now, so the memory can actually be freed.
-            if failed and (release := getattr(backend, "release_memory", None)):
-                release()
+            if failed and hasattr(backend, "release_memory"):
+                backend.release_memory()
             rec["generate_seconds"] = round(time.monotonic() - t1, 2)
             rec["finished_at"] = _now()
             append_jsonl(results, rec)
             if sync_dir:
                 shutil.copy2(results, Path(sync_dir) / "results.jsonl")
             counts["pending"] -= 1
+        # Drop this model before the next group loads, so two pipelines never coexist.
+        del backend
+        _free_memory()
     return counts
+
+
+def _free_memory() -> None:
+    gc.collect()
+    torch = sys.modules.get("torch")  # only if a GPU backend already imported it
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
