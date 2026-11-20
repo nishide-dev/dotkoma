@@ -201,7 +201,7 @@ def finalize(run_dir: str | Path, cfg: FinalizeConfig) -> list[dict]:
     run_dir = Path(run_dir)
     jobs = read_jsonl(run_dir / "jobs.jsonl")
     results = latest_by_job(read_jsonl(run_dir / "results.jsonl"))
-    selections = latest_by_job(read_jsonl(run_dir / "selections.jsonl"))
+    selections = latest_by_job(read_jsonl(run_dir / "selections.jsonl", unterminated_tail="parse"))
 
     index = []
     for j in jobs:

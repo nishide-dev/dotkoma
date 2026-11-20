@@ -61,7 +61,9 @@ prompt = "A pixel art {subject} on a flat solid background. Small wisps of steam
 [generation]
 backend = "diffusers"
 model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-model_revision = "main"  # resolved to a commit sha at load time and recorded in results.jsonl
+# Pinned commit: the revision is part of job_id, so a moving branch name like "main"
+# would let the weights change without changing the ID. Bump it deliberately.
+model_revision = "b8fff7315c768468a5333511427288870b2e9635"
 width = 1280
 height = 704
 num_frames = 49  # ~2 s at 24 fps; Wan needs 4k+1 frames
