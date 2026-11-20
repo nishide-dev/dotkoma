@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -126,6 +127,23 @@ def _drop_torn_tail(path: Path) -> None:
             f.truncate(0)
         f.flush()
         os.fsync(f.fileno())
+
+
+def copy_atomic(src: str | Path, dst: str | Path) -> None:
+    """Copy via a temp file in the destination directory, then rename over ``dst``.
+
+    A crash mid-copy leaves the previous ``dst`` intact (e.g. a Drive backup).
+    """
+    src, dst = Path(src), Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dst.parent, prefix=f".{dst.name}.", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def write_json_atomic(path: str | Path, obj: Any) -> None:

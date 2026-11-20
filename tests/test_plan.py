@@ -212,3 +212,63 @@ def test_plan_syncs_each_answer(smoke_cfg, tmp_path):
     plan(cfg.run_dir, sync_dir=sync, planner_factory=lambda spec: FakePlanner())
     assert (sync / "plans.jsonl").read_bytes() == (cfg.run_dir / "plans.jsonl").read_bytes()
     assert len(read_jsonl(sync / "plans.jsonl")) == 2
+
+
+def test_plan_refuses_a_sprite_that_does_not_match_the_request(smoke_cfg):
+    from dotkoma.imaging import load_rgba, save_png
+
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    q = read_jsonl(cfg.run_dir / "plan_requests.jsonl")[0]
+    png = cfg.run_dir / q["input_png"]
+    rgba = load_rgba(png)
+    rgba[rgba[..., 3] > 0, 0] ^= 1  # an older inputs/ uploaded with newer requests
+    save_png(png, rgba)
+    assert plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())["failed"] == 1
+    assert read_jsonl(cfg.run_dir / "plans.jsonl")[-1]["status"] == "failed"
+
+
+def test_sync_is_retried_on_resume_and_atomic(smoke_cfg, tmp_path, monkeypatch):
+    import dotkoma.plan as plan_mod
+
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    sync = tmp_path / "drive"
+    calls = []
+    real = plan_mod.copy_atomic
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 1:  # the copy after the first answer fails
+            raise OSError("drive unavailable")
+        real(src, dst)
+
+    monkeypatch.setattr(plan_mod, "copy_atomic", flaky)
+    with pytest.raises(OSError):
+        plan(cfg.run_dir, sync_dir=sync, planner_factory=lambda spec: FakePlanner())
+    assert not (sync / "plans.jsonl").exists()
+    # nothing left to plan, but the resume still brings the backup up to date
+    assert (
+        plan(cfg.run_dir, sync_dir=sync, planner_factory=lambda spec: FakePlanner())["pending"] == 0
+    )
+    assert (sync / "plans.jsonl").read_bytes() == (cfg.run_dir / "plans.jsonl").read_bytes()
+
+
+def test_copy_atomic_keeps_the_old_copy_on_failure(tmp_path, monkeypatch):
+    import shutil
+
+    from dotkoma.records import copy_atomic
+
+    src, dst = tmp_path / "a.jsonl", tmp_path / "out" / "a.jsonl"
+    src.write_text("new\n")
+    dst.parent.mkdir()
+    dst.write_text("old\n")
+
+    def broken(a, b):
+        open(b, "w").write("partial")
+        raise OSError("vm gone")
+
+    monkeypatch.setattr(shutil, "copy2", broken)
+    with pytest.raises(OSError):
+        copy_atomic(src, dst)
+    assert dst.read_text() == "old\n" and list(dst.parent.iterdir()) == [dst]

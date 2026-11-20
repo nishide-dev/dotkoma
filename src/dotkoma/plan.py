@@ -30,7 +30,6 @@ import json
 import logging
 import platform
 import re
-import shutil
 import time
 import traceback
 from collections.abc import Callable
@@ -42,7 +41,8 @@ import numpy as np
 from PIL import Image
 
 from .imaging import load_rgba
-from .records import append_jsonl, read_jsonl, stable_hash
+from .pixel_ops import sprite_digest
+from .records import append_jsonl, copy_atomic, read_jsonl, stable_hash
 
 log = logging.getLogger(__name__)
 
@@ -264,6 +264,7 @@ def plan(
     if limit is not None:
         todo = todo[:limit]
     counts = {"ok": 0, "failed": 0, "pending": len(todo)}
+    _sync(run_dir, sync_dir)  # also on resume: an earlier copy may have failed
     if not todo:
         log.info("nothing to plan")
         return counts
@@ -287,6 +288,9 @@ def plan(
             t1 = time.monotonic()
             try:
                 rgba = load_rgba(run_dir / q["input_png"])
+                if "sprite_sha256" in q and sprite_digest(rgba) != q["sprite_sha256"]:
+                    # e.g. an older inputs/ uploaded with newer requests
+                    raise ValueError(f"{q['input_png']} is not the sprite this request is for")
                 raw = planner(sprite_image(rgba, spec["image_scale"]), q["instruction"])
                 rec["raw"] = raw
                 rec.update(status="ok", **parse_answer(raw))
@@ -301,15 +305,20 @@ def plan(
                 log.error("plan %s failed: %s", q["request_id"], rec["error"])
             rec["seconds"] = round(time.monotonic() - t1, 2)
             append_jsonl(run_dir / "plans.jsonl", rec)
-            if sync_dir:  # keep finished answers if the VM goes away
-                Path(sync_dir).mkdir(parents=True, exist_ok=True)
-                shutil.copy2(run_dir / "plans.jsonl", Path(sync_dir) / "plans.jsonl")
+            _sync(run_dir, sync_dir)
             counts["pending"] -= 1
         if hasattr(planner, "close"):
             planner.close()
         del planner
         gc.collect()
     return counts
+
+
+def _sync(run_dir: Path, sync_dir: str | Path | None) -> None:
+    """Keep finished answers if the VM goes away (atomic: the old copy survives a crash)."""
+    log_path = run_dir / "plans.jsonl"
+    if sync_dir and log_path.exists():
+        copy_atomic(log_path, Path(sync_dir) / "plans.jsonl")
 
 
 def _now() -> str:

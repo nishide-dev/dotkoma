@@ -15,7 +15,6 @@ from __future__ import annotations
 import gc
 import logging
 import platform
-import shutil
 import sys
 import time
 import traceback
@@ -27,7 +26,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from .imaging import Layout, hex_to_rgb, load_rgba
-from .records import append_jsonl, canonical_json, latest_by_job, read_jsonl
+from .records import append_jsonl, canonical_json, copy_atomic, latest_by_job, read_jsonl
 from .video import write_mp4
 
 log = logging.getLogger(__name__)
@@ -300,7 +299,7 @@ def generate(
                 if sync_dir:
                     dst = Path(sync_dir) / "raw" / out.name
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(out, dst)
+                    copy_atomic(out, dst)
                 rec.update(
                     status="ok",
                     raw_path=out.relative_to(run_dir).as_posix(),
@@ -325,7 +324,7 @@ def generate(
             rec["finished_at"] = _now()
             append_jsonl(results, rec)
             if sync_dir:
-                shutil.copy2(results, Path(sync_dir) / "results.jsonl")
+                copy_atomic(results, Path(sync_dir) / "results.jsonl")
             counts["pending"] -= 1
         # Drop this model before the next group loads, so two pipelines never coexist.
         del backend
