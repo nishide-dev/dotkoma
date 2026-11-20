@@ -63,3 +63,14 @@ Pilot 02（`pilot-02.md`）で局所動作（炎・手振り・湯気）が A14B
 - 機械判定に「動きが小さすぎる」（隣接差分の最大が数 px 以下）と「元絵の要素が消えたまま」（元絵の不透明画素が 2 コマ目以降ずっと欠ける）を加える
 - flutter のように形そのものが変わる動作は、identity_drift の閾値を動作ごとに変えられるようにする
 - 使える組み合わせ（flicker / steam / smoke / bubble / sparkle の一部）で題材を増やして量産する
+
+## 追記: 機械判定の強化（`low_motion` / `detail_lost`）
+
+上の「次の候補」の 1 つ目を実装し、同じ 44 本を後処理だけやり直した（再生成なし）。
+
+- `low_motion`: 1 周の隣接差分の中央値 < 3 px。crown v0（1.5）が該当。目視で使えるもので最も小さいのは tea light v1（5.5）
+- `detail_lost`: 2 コマ目以降ずっと欠けている元絵の画素 > 5。mug of coffee（19 / 19）、fire pit（8 / 11）、fox v1（6）が該当。目視で使えるもので最も大きいのは chimney v0（3）、Pilot 02 の toy robot wave（4）
+
+candidate は 27 → 22 本になり、上で「使えない」とした candidate 5 本（crown v0、mug of coffee ×2、fire pit v1、fox v1）がすべて flagged に移った。他の candidate は変わらない。閾値は Pilot 02・03 の 56 本から決めたので、本数を増やしたら見直す。
+
+flutter（旗）は `detail_lost` も付く（布が動くと元の位置の画素が空くため）。identity_drift の値も、はためきとして自然なもの（0.45〜0.48）と元絵にない模様が出たもの（0.45 / 0.54）が重なり、動作別の閾値では分けられなかった。flutter は flagged のまま目視に回す。

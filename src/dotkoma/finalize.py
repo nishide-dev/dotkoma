@@ -129,6 +129,38 @@ def identity_drift(frame: np.ndarray, source: np.ndarray, max_shift: int) -> flo
     return best / max(1, opaque)
 
 
+def lost_detail(frames: list[np.ndarray], source: np.ndarray, max_shift: int) -> int:
+    """Source pixels missing from every frame after the first, allowing translation.
+
+    Frame 0 reproduces the reference, so a detail the model drops right away (a
+    cookie on a mug) shows up as pixels absent from all later frames. Each frame is
+    compared at the shift that keeps most of the source, so a hop or sway is not a
+    loss; pixels a shift pushes off the grid count as missing.
+
+    Only vanishing (opaque -> transparent) counts, not repainting. Local motions
+    repaint on purpose and for good: a closed eye, a flame that leans. In pilot 03,
+    counting colour changes too gave usable clips up to 11 (owl blink, torch 6),
+    over the threshold that separates the vanished cookie (19) from them when only
+    transparency counts (usable <= 4). Repainting is left to identity_drift.
+    """
+    opaque = source[..., 3] > 0
+    if len(frames) < 2 or not opaque.any():
+        return 0
+    missing_everywhere = opaque.copy()
+    r = range(-max_shift, max_shift + 1)
+    for f in frames[1:]:
+        best = None
+        for dy in r:
+            for dx in r:
+                # frame pixel at (y + dy, x + dx) should hold source pixel (y, x)
+                back = _shift(f, -dy, -dx)
+                miss = opaque & (back[..., 3] == 0)
+                if best is None or miss.sum() < best.sum():
+                    best = miss
+        missing_everywhere &= best
+    return int(missing_everywhere.sum())
+
+
 def run_checks(
     frames: list[np.ndarray],
     source: np.ndarray,
@@ -152,6 +184,9 @@ def run_checks(
             round(identity_drift(f, source, cfg.identity_max_shift), 3) for f in frames
         ],
         "opaque_pixels": [int((f[..., 3] > 0).sum()) for f in frames],
+        # pixels changed per step around the loop (including last -> first)
+        "motion_median": float(np.median(adjacent + [loop])) if n > 1 else 0.0,
+        "detail_lost_pixels": lost_detail(frames, source, cfg.identity_max_shift),
     }
     flags = []
     if any(f.shape != (SPRITE, SPRITE, 4) for f in frames):
@@ -174,6 +209,10 @@ def run_checks(
         flags.append("background_unstable")
     if max(m["identity_drift"]) > cfg.identity_drift_threshold:
         flags.append("identity_drift")
+    if n > 1 and "all_identical" not in flags and m["motion_median"] < cfg.low_motion_pixels:
+        flags.append("low_motion")  # moves in a step or two, static the rest of the loop
+    if m["detail_lost_pixels"] > cfg.detail_lost_pixels:
+        flags.append("detail_lost")
     m["flags"] = flags
     m["notes"] = notes
     m["auto_verdict"] = (

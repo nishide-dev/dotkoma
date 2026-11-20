@@ -139,6 +139,12 @@ class FinalizeConfig:
     edge_cut_local_fraction: float | None = None
     background_unstable_fraction: float = 0.05
     identity_drift_threshold: float = 0.3  # see finalize.identity_drift
+    # low_motion: median pixels changed per step of the loop below this (pilot 03:
+    # near-static clips 0-1.5, the faintest usable flicker 5.5)
+    low_motion_pixels: float = 3.0
+    # detail_lost: more source pixels than this missing from every frame after the first
+    # (see finalize.lost_detail; pilot 03: a vanished cookie 19, usable clips <= 4)
+    detail_lost_pixels: int = 5
     identity_max_shift: int = 4
 
     def local_edge_limit(self) -> float:
@@ -275,6 +281,11 @@ def load_config(path: str | Path, work_dir: str | Path | None = None) -> Config:
     return cfg
 
 
+def number(v) -> bool:
+    """A real number from TOML (bool is an int in Python, but not a valid threshold)."""
+    return isinstance(v, int | float) and not isinstance(v, bool)
+
+
 def _validate(cfg: Config) -> None:
     if cfg.source.kind not in ("atlas", "local"):
         raise ConfigError(f"unknown source.kind {cfg.source.kind!r}")
@@ -318,10 +329,17 @@ def _validate(cfg: Config) -> None:
     if 16 * r.scale > min(g.width, g.height):
         raise ConfigError(f"16*scale={16 * r.scale} does not fit the {g.width}x{g.height} canvas")
     f = cfg.finalize
+    if f.min_frames < 2:
+        raise ConfigError("finalize.min_frames must be >= 2 (a loop needs at least two frames)")
     if not (f.min_frames <= f.num_frames <= f.max_frames):
         raise ConfigError("finalize.num_frames must lie in [min_frames, max_frames]")
     if f.edge_cut_local_fraction is not None and f.edge_cut_local_fraction < f.edge_cut_fraction:
         raise ConfigError("finalize.edge_cut_local_fraction must be >= edge_cut_fraction")
+    if not (number(f.low_motion_pixels) and f.low_motion_pixels >= 0):
+        raise ConfigError("finalize.low_motion_pixels must be a number >= 0")
+    lost = f.detail_lost_pixels
+    if not (isinstance(lost, int) and not isinstance(lost, bool) and lost >= 0):
+        raise ConfigError("finalize.detail_lost_pixels must be an int >= 0")
     if f.background not in ("per_frame", "first_frame"):
         raise ConfigError(f"unknown finalize.background {f.background!r}")
     for a in cfg.actions.values():
@@ -334,9 +352,6 @@ def _validate(cfg: Config) -> None:
                 )
     if f.palette not in ("source+stable", "source", "none"):
         raise ConfigError(f"unknown finalize.palette {f.palette!r}")
-
-    def number(v) -> bool:
-        return isinstance(v, int | float) and not isinstance(v, bool)
 
     if not (number(f.new_color_distance) and 0 < f.new_color_distance <= 442):
         raise ConfigError("finalize.new_color_distance must be in (0, 442] (RGB distance)")
