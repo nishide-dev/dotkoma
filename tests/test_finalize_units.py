@@ -42,3 +42,15 @@ def test_loop_jump_and_identical_flags():
     assert "all_identical" in r["flags"] and r["auto_verdict"] == "reject"
     empty = [np.zeros((16, 16, 4), np.uint8)] + smooth[1:]
     assert "empty_frame" in run_checks(empty, smooth[0], 0, 0, cfg)["flags"]
+
+
+def test_identity_drift_ignores_translation_but_not_redrawing():
+    from dotkoma.finalize import identity_drift
+
+    src = _sprite(4)
+    assert identity_drift(_sprite(6), src, 4) == 0.0  # moved, same drawing
+    other = np.zeros((16, 16, 4), np.uint8)
+    other[2:14, 7:9] = (50, 50, 200, 255)  # a different shape and colour
+    assert identity_drift(other, src, 4) > 0.9
+    flags = run_checks([src, other, src, src], src, 0, 0, FinalizeConfig())["flags"]
+    assert "identity_drift" in flags

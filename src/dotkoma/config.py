@@ -100,6 +100,8 @@ class FinalizeConfig:
     loop_jump_factor: float = 2.5
     edge_cut_fraction: float = 0.02
     background_unstable_fraction: float = 0.05
+    identity_drift_threshold: float = 0.3  # see finalize.identity_drift
+    identity_max_shift: int = 4
 
 
 @dataclass(frozen=True)

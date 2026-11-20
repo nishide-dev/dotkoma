@@ -95,6 +95,26 @@ def frame_diff(a: np.ndarray, b: np.ndarray, tol: float = 24.0) -> int:
     return int((alpha | (both & rgb)).sum())
 
 
+def _shift(a: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    out = np.zeros_like(a)
+    h, w = a.shape[:2]
+    out[max(dy, 0) : h + min(dy, 0), max(dx, 0) : w + min(dx, 0)] = a[
+        max(-dy, 0) : h + min(-dy, 0), max(-dx, 0) : w + min(-dx, 0)
+    ]
+    return out
+
+
+def identity_drift(frame: np.ndarray, source: np.ndarray, max_shift: int) -> float:
+    """Share of the source's pixels that differ from ``frame`` under the best shift.
+
+    Translation (hop, bob) is free; redrawing the sprite is not. In the pilot,
+    frames that kept the sprite scored <= 0.23 and redrawn / transformed ones >= 0.35.
+    """
+    n = max(1, int((source[..., 3] > 0).sum()))
+    r = range(-max_shift, max_shift + 1)
+    return min(frame_diff(frame, _shift(source, dy, dx)) for dy in r for dx in r) / n
+
+
 def run_checks(
     frames: list[np.ndarray],
     source: np.ndarray,
@@ -112,7 +132,9 @@ def run_checks(
         "loop_diff": loop,
         "edge_cut_fraction": round(edge_cut, 4),
         "border_foreground_fraction": round(border_fg, 4),
-        "first_frame_source_diff": frame_diff(frames[0], source),
+        "identity_drift": [
+            round(identity_drift(f, source, cfg.identity_max_shift), 3) for f in frames
+        ],
         "opaque_pixels": [int((f[..., 3] > 0).sum()) for f in frames],
     }
     flags = []
@@ -130,8 +152,8 @@ def run_checks(
         flags.append("edge_cut")
     if border_fg > cfg.background_unstable_fraction:
         flags.append("background_unstable")
-    if m["first_frame_source_diff"] > 0.25 * max(1, int((source[..., 3] > 0).sum())):
-        flags.append("source_mismatch")
+    if max(m["identity_drift"]) > cfg.identity_drift_threshold:
+        flags.append("identity_drift")
     m["flags"] = flags
     m["auto_verdict"] = (
         "reject" if any(f in HARD_FAILS for f in flags) else ("flagged" if flags else "candidate")
