@@ -68,6 +68,9 @@ class GenerationConfig:
     negative_prompt: str = ""
     seed: int | None = None  # fixed seed; None derives one per (row_id, action)
     offload: bool = True
+    # Tiled VAE decoding changes the decoded pixels slightly. Tiled is the baseline
+    # (every pilot video was decoded tiled); full decoding adds "vae_decode" to job_id.
+    vae_tiling: bool = True
     # raw video encoding; yuv444p avoids chroma blur at sprite edges
     pix_fmt: str = "yuv444p"
     crf: int = 10

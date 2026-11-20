@@ -97,7 +97,12 @@ def prepare(cfg: Config) -> Path:
                     "prompt": prompt,
                     "negative_prompt": g.negative_prompt,
                     "seed": seed,
-                    "model": {"backend": g.backend, "id": g.model_id, "revision": g.model_revision},
+                    "model": {
+                        "backend": g.backend,
+                        "id": g.model_id,
+                        "revision": g.model_revision,
+                        **({} if g.vae_tiling else {"vae_decode": "full"}),
+                    },
                     "inference": {
                         "width": g.width,
                         "height": g.height,

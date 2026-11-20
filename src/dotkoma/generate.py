@@ -89,12 +89,13 @@ def _shift(img: np.ndarray, dy: int, dx: int, fill: np.ndarray) -> np.ndarray:
 class DiffusersWanBackend:
     """Wan2.2 image->video through diffusers. Not exercised by the CPU test suite."""
 
-    def __init__(self, model_id: str, revision: str, offload: bool = True) -> None:
+    def __init__(self, model: dict, offload: bool = True) -> None:
         import torch
         from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
         from huggingface_hub import HfApi
 
-        resolved = HfApi().model_info(model_id, revision=revision).sha
+        model_id = model["id"]
+        resolved = HfApi().model_info(model_id, revision=model["revision"]).sha
         vae = AutoencoderKLWan.from_pretrained(
             model_id, subfolder="vae", torch_dtype=torch.float32, revision=resolved
         )
@@ -106,15 +107,18 @@ class DiffusersWanBackend:
         else:
             pipe.to("cuda")
         # Decoding 49 frames at 1280x704 in one pass needs more than an L4's 22 GB
-        # (observed OOM in vae.decode); tiled decoding bounds peak memory.
-        pipe.vae.enable_tiling()
+        # (observed OOM in vae.decode); tiled decoding bounds peak memory. The mode is
+        # part of job_id via model["vae_decode"] (absent = tiled).
+        vae_tiling = model.get("vae_decode", "tiled") == "tiled"
+        if vae_tiling:
+            pipe.vae.enable_tiling()
         self.pipe, self.torch = pipe, torch
         self.info = {
             "backend": "diffusers",
             "model_id": model_id,
             "model_revision": resolved,
             "offload": offload,
-            "vae_tiling": True,
+            "vae_tiling": vae_tiling,
             **_torch_runtime(torch),
         }
 
@@ -159,7 +163,7 @@ def load_backend(model: dict, offload: bool) -> Backend:
     if model["backend"] == "fake":
         return FakeBackend()
     if model["backend"] == "diffusers":
-        return DiffusersWanBackend(model["id"], model["revision"], offload=offload)
+        return DiffusersWanBackend(model, offload=offload)
     raise ValueError(f"unknown backend {model['backend']!r}")
 
 
