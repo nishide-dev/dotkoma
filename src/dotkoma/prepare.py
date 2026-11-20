@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
+
+import numpy as np
 
 from .config import Config
 from .imaging import Layout, choose_key_color, make_reference, save_png
@@ -43,16 +46,31 @@ def pick_distinct(candidates: list[Sprite], count: int, min_distance: float = 0.
     return chosen
 
 
-def _prefer_room(pool: list[Sprite], actions) -> list[Sprite]:
-    """Put sprites with room for every pixel_ops motion first (stable, so deterministic).
+def _sprite_groups(pick, pool: list[Sprite], cfg: Config):
+    """(candidate sprites, actions) to pick sprites for, separately.
 
-    Most Atlas sprites fill the 16x16 grid, and a translation would cut them off.
-    Picks without pixel_ops actions keep the source order unchanged.
+    Video actions share the pick's pool in source order (so their job_ids are as
+    before). Each pixel_ops action picks on its own among the sprites with room
+    for its motion: most Atlas sprites fill the 16x16 grid, and a translation
+    would cut them off. A pinned row_id is kept as is (prepare then skips the
+    motion if it does not fit).
     """
-    moves = [expand_pixel_ops(a.pixel_ops)["offsets"] for a in actions if a.pixel_ops]
-    if not moves:
-        return pool
-    return sorted(pool, key=lambda sp: sum(not fits(sp.rgba, m) for m in moves))
+    video = tuple(a for a in pick.actions if cfg.actions[a].generation_method == "video_model")
+    if video:
+        yield pool, video
+    for a in pick.actions:
+        action = cfg.actions[a]
+        if action.generation_method != "pixel_ops":
+            continue
+        if pick.row_id is None:
+            offsets = expand_pixel_ops(action.pixel_ops)["offsets"]
+            roomy = [sp for sp in pool if fits(sp.rgba, offsets)]
+            if not roomy:
+                log.warning("%s: no sprite has room for %s %s", pick.subject, a, offsets)
+                continue
+            yield roomy, (a,)
+        else:
+            yield pool, (a,)
 
 
 def model_spec(g) -> dict:
@@ -106,87 +124,92 @@ def prepare(cfg: Config) -> Path:
             pool = [s for s in pool if s.row_id == pick.row_id]
             if not pool:
                 raise SystemExit(f"row_id {pick.row_id} ({pick.subject}) not found")
-        else:
-            pool = _prefer_room(pool, [cfg.actions[a] for a in pick.actions])
-        sprites = pick_distinct(pool, pick.count)
-        if len(sprites) < pick.count:
-            log.warning(
-                "%s: only %d distinct sprites (wanted %d)", pick.subject, len(sprites), pick.count
-            )
+        for group_pool, group_actions in _sprite_groups(pick, pool, cfg):
+            sprites = pick_distinct(group_pool, pick.count)
+            if len(sprites) < pick.count:
+                log.warning(
+                    "%s %s: only %d distinct sprites (wanted %d)",
+                    pick.subject,
+                    list(group_actions),
+                    len(sprites),
+                    pick.count,
+                )
 
-        for sp in sprites:
-            key = choose_key_color(sp.rgba, r.key_colors)
-            stem = f"{sp.row_id:07d}"
-            src_png = inputs / f"{stem}.png"
-            ref_png = inputs / f"{stem}_ref_{key.lstrip('#')}.png"
-            save_png(src_png, sp.rgba)
-            if any(cfg.actions[a].generation_method == "video_model" for a in pick.actions):
-                save_png(ref_png, make_reference(sp.rgba, layout, key))
+            for sp in sprites:
+                key = choose_key_color(sp.rgba, r.key_colors)
+                stem = f"{sp.row_id:07d}"
+                src_png = inputs / f"{stem}.png"
+                ref_png = inputs / f"{stem}_ref_{key.lstrip('#')}.png"
+                save_png(src_png, sp.rgba)
+                if any(cfg.actions[a].generation_method == "video_model" for a in group_actions):
+                    save_png(ref_png, make_reference(sp.rgba, layout, key))
 
-            for action_name, variant in (
-                (a, v)
-                for a in pick.actions
-                for v in cfg.actions[a].variant_indices(pick.prompt_variants)
-            ):
-                action = cfg.actions[action_name]
-                if action.generation_method == "pixel_ops":
-                    job = _pixel_ops_job(cfg, sp, action, src, src_png, run)
-                    if job and job["job_id"] not in seen:
-                        seen.add(job["job_id"])
-                        jobs.append(job)
-                    continue
-                prompt = build_prompt(action.prompts[variant], sp)
-                # same seed for every wording, so variants differ only in the prompt
-                seed = g.seed if g.seed is not None else derive_seed(src, sp.row_id, action_name)
-                gen_inputs = {
-                    "source": {**src, "row_id": sp.row_id},
-                    "action": action_name,
-                    "prompt": prompt,
-                    "negative_prompt": g.negative_prompt,
-                    "seed": seed,
-                    "model": model_spec(g),
-                    "inference": {
-                        "width": g.width,
-                        "height": g.height,
-                        "num_frames": g.num_frames,
-                        "fps": g.fps,
-                        "steps": g.steps,
-                        "guidance": g.guidance,
-                        **({"guidance_2": g.guidance_2} if g.guidance_2 is not None else {}),
-                    },
-                    "reference": {"layout": layout.to_dict(), "key_color": key},
-                }
-                jid = job_id(gen_inputs)
-                if jid in seen:
-                    continue
-                seen.add(jid)
-                jobs.append(
-                    {
-                        "job_id": jid,
-                        "config_version": cfg.version,
-                        "source": {
-                            **src,
-                            "row_id": sp.row_id,
-                            "subject": sp.subject,
-                            "caption": sp.caption,
-                        },
-                        "split": assign_split(sp.subject, cfg),
-                        "requested_action": action_name,
-                        "motion": action.motion,
-                        "generation_method": "video_model",
-                        "prompt_method": action.method,
-                        "prompt_variant": variant,
+                for action_name, variant in (
+                    (a, v)
+                    for a in group_actions
+                    for v in cfg.actions[a].variant_indices(pick.prompt_variants)
+                ):
+                    action = cfg.actions[action_name]
+                    if action.generation_method == "pixel_ops":
+                        job = _pixel_ops_job(cfg, sp, action, src, src_png, run)
+                        if job and job["job_id"] not in seen:
+                            seen.add(job["job_id"])
+                            jobs.append(job)
+                        continue
+                    prompt = build_prompt(action.prompts[variant], sp)
+                    # same seed for every wording, so variants differ only in the prompt
+                    seed = (
+                        g.seed if g.seed is not None else derive_seed(src, sp.row_id, action_name)
+                    )
+                    gen_inputs = {
+                        "source": {**src, "row_id": sp.row_id},
+                        "action": action_name,
                         "prompt": prompt,
                         "negative_prompt": g.negative_prompt,
                         "seed": seed,
-                        "model": gen_inputs["model"],
-                        "inference": gen_inputs["inference"],
-                        "layout": layout.to_dict(),
-                        "key_color": key,
-                        "input_png": src_png.relative_to(run).as_posix(),
-                        "reference_png": ref_png.relative_to(run).as_posix(),
+                        "model": model_spec(g),
+                        "inference": {
+                            "width": g.width,
+                            "height": g.height,
+                            "num_frames": g.num_frames,
+                            "fps": g.fps,
+                            "steps": g.steps,
+                            "guidance": g.guidance,
+                            **({"guidance_2": g.guidance_2} if g.guidance_2 is not None else {}),
+                        },
+                        "reference": {"layout": layout.to_dict(), "key_color": key},
                     }
-                )
+                    jid = job_id(gen_inputs)
+                    if jid in seen:
+                        continue
+                    seen.add(jid)
+                    jobs.append(
+                        {
+                            "job_id": jid,
+                            "config_version": cfg.version,
+                            "source": {
+                                **src,
+                                "row_id": sp.row_id,
+                                "subject": sp.subject,
+                                "caption": sp.caption,
+                            },
+                            "split": assign_split(sp.subject, cfg),
+                            "requested_action": action_name,
+                            "motion": action.motion,
+                            "generation_method": "video_model",
+                            "prompt_method": action.method,
+                            "prompt_variant": variant,
+                            "prompt": prompt,
+                            "negative_prompt": g.negative_prompt,
+                            "seed": seed,
+                            "model": gen_inputs["model"],
+                            "inference": gen_inputs["inference"],
+                            "layout": layout.to_dict(),
+                            "key_color": key,
+                            "input_png": src_png.relative_to(run).as_posix(),
+                            "reference_png": ref_png.relative_to(run).as_posix(),
+                        }
+                    )
 
     jobs.sort(
         key=lambda j: (j["source"]["row_id"], j["requested_action"], j["prompt_variant"] or 0)
@@ -205,7 +228,7 @@ def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, ru
     if not fits(sp.rgba, ops["offsets"]):
         # moving it would push pixels off the 16x16 grid: no valid sample to make
         log.warning(
-            "%s row %d: no room for %s (%s); skipped",
+            "%s row %d (pinned): no room for %s (%s); skipped",
             sp.subject,
             sp.row_id,
             action.name,
@@ -218,6 +241,8 @@ def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, ru
             "action": action.name,
             "generation_method": "pixel_ops",
             "pixel_ops": ops,
+            # the frames are made from these exact pixels, so an edited sprite is a new job
+            "sprite_sha256": hashlib.sha256(np.ascontiguousarray(sp.rgba).tobytes()).hexdigest(),
         }
     )
     return {

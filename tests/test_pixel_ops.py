@@ -1,14 +1,15 @@
 """pixel_ops: whole-sprite motion made by translating the 16x16 sprite."""
 
 import json
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
-from dotkoma.config import ConfigError, load_config
+from dotkoma.config import ConfigError, SpritePick, load_config
 from dotkoma.finalize import finalize
 from dotkoma.generate import generate, pending_jobs
-from dotkoma.imaging import load_rgba
+from dotkoma.imaging import load_rgba, save_png
 from dotkoma.pixel_ops import expand, fits, render, translate, validate
 from dotkoma.prepare import prepare
 from dotkoma.records import read_jsonl
@@ -159,17 +160,60 @@ def test_generation_section_is_optional_only_for_pixel_ops(smoke_cfg):
     assert not list((cfg.run_dir / "inputs").glob("*_ref_*.png"))  # no video, no reference
 
 
-def test_prepare_prefers_sprites_with_room():
-    from dotkoma.config import ActionConfig
-    from dotkoma.prepare import _prefer_room
+def test_each_pixel_motion_picks_its_own_sprite(smoke_cfg):
+    from dotkoma.prepare import _sprite_groups
     from dotkoma.source import Sprite
 
-    full = np.zeros((16, 16, 4), np.uint8)
-    full[:, 2:14] = 255  # touches top and bottom
-    small = np.zeros((16, 16, 4), np.uint8)
-    small[4:12, 4:12] = 255
-    pool = [Sprite(1, "x", "", full), Sprite(2, "x", "", small)]
-    hop = ActionConfig("hop", generation_method="pixel_ops", pixel_ops={"kind": "hop"})
-    video = ActionConfig("wave", prompts=("p",))
-    assert [s.row_id for s in _prefer_room(pool, [hop])] == [2, 1]
-    assert [s.row_id for s in _prefer_room(pool, [video])] == [1, 2]  # order untouched
+    tall = np.zeros((16, 16, 4), np.uint8)
+    tall[:, 6:10] = 255  # room left/right only: sway fits, hop does not
+    low = np.zeros((16, 16, 4), np.uint8)
+    low[6:16, 0:16] = 255  # room above only: hop fits, sway does not
+    pool = [Sprite(1, "x", "", tall), Sprite(2, "x", "", low)]
+    cfg = _with_pixel_actions(smoke_cfg, "")
+    sway = '[actions.px_sway]\ngeneration_method = "pixel_ops"\npixel_ops = { kind = "sway" }\n'
+    cfg.config_path.write_text(cfg.config_path.read_text() + sway)
+    cfg = load_config(cfg.config_path, work_dir=cfg.work_dir)
+
+    pick = SpritePick("x", ("hop", "px_hop", "px_sway"))
+    groups = [([sp.row_id for sp in p], a) for p, a in _sprite_groups(pick, pool, cfg)]
+    # video actions keep the whole pool in order; each motion gets the sprites it fits
+    assert groups == [([1, 2], ("hop",)), ([2], ("px_hop",)), ([1], ("px_sway",))]
+    pinned = SpritePick("x", ("px_hop",), row_id=1)
+    assert [a for _, a in _sprite_groups(pinned, pool[:1], cfg)] == [("px_hop",)]
+
+
+def test_video_job_ids_unchanged_from_main(smoke_cfg):
+    # job_ids of configs/smoke.toml before pixel_ops existed (main @ 684c7dd)
+    assert sorted(j["job_id"] for j in read_jsonl(prepare(smoke_cfg))) == [
+        "4947ed203f3e31ed",
+        "9f5d10ffd8a4f3ce",
+        "b59d4fff98100f14",
+        "b5ce6150b8d5fd6a",
+        "c798335cdc692b15",
+        "c7b16f663db000f4",
+    ]
+
+
+def test_edited_sprite_gets_a_new_pixel_ops_job(smoke_cfg, tmp_path):
+    cfg = _with_pixel_actions(smoke_cfg, '[[sprites]]\nsubject = "slime"\nactions = ["px_bob"]\n')
+    px = lambda: {  # noqa: E731
+        j["job_id"] for j in read_jsonl(prepare(cfg)) if j["generation_method"] == "pixel_ops"
+    }
+    before = px()
+    assert len(before) == 1
+    png = tmp_path / "tests" / "fixtures" / "sprites" / "slime.png"
+    rgba = load_rgba(png)
+    rgba[rgba[..., 3] > 0, 0] ^= 1  # recolour in place, same row_id and path
+    save_png(png, rgba)
+    assert px().isdisjoint(before)
+
+
+def test_pixel_ops_postprocess_id_tracks_check_settings(smoke_cfg):
+    cfg = _with_pixel_actions(smoke_cfg, '[[sprites]]\nsubject = "slime"\nactions = ["px_bob"]\n')
+    prepare(cfg)
+    first = {r["job_id"]: r.get("postprocess_id") for r in finalize(cfg.run_dir, cfg.finalize)}
+    stricter = replace(cfg.finalize, identity_drift_threshold=0.1)
+    second = {r["job_id"]: r.get("postprocess_id") for r in finalize(cfg.run_dir, stricter)}
+    jobs = read_jsonl(cfg.run_dir / "jobs.jsonl")
+    px = next(j["job_id"] for j in jobs if j["generation_method"] == "pixel_ops")
+    assert first[px] and second[px] and first[px] != second[px]

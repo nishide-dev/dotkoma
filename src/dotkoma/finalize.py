@@ -220,8 +220,8 @@ def finalize_pixel_ops_job(run_dir: Path, job: dict, cfg: FinalizeConfig) -> dic
     ops = job["pixel_ops"]
     frames, lost = pixel_ops.render(source, ops["offsets"])
     checks = run_checks(frames, source, lost, 0.0, cfg)
-    # the palette and background rules do not apply, so finalize settings are not in the id
-    pp_id = stable_hash({"pixel_ops": ops}, 12)
+    # check thresholds and preview_scale still apply (keying and palette settings do not)
+    pp_id = stable_hash({"finalize": cfg.__dict__, "pixel_ops": ops}, 12)
     extra = {"pixel_ops": ops}
     return _write_sample(run_dir, job, frames, ops["durations_ms"], checks, pp_id, extra, cfg)
 

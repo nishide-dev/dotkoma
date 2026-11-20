@@ -14,67 +14,31 @@ repo_id = "Angais/pixel-art-atlas-1.4m"
 revision = "bf78f8c8cbafa6d07718111a94d41e2dd79ddaa7"
 shards = ["data/train-000.parquet"]
 
-# One entry per (subject, action): prepare then picks, for each motion, a sprite of the
-# subject with enough transparent margin for it (most Atlas sprites fill the grid).
+# prepare picks a sprite per motion among the subject's sprites with enough transparent
+# margin for it (most Atlas sprites fill the 16x16 grid).
 [[sprites]]
 subject = "cat"
-actions = ["hop"]
-[[sprites]]
-subject = "cat"
-actions = ["bob"]
-[[sprites]]
-subject = "cat"
-actions = ["sway"]
+actions = ["hop", "bob", "sway"]
 
 [[sprites]]
 subject = "ghost"
-actions = ["hop"]
-[[sprites]]
-subject = "ghost"
-actions = ["bob"]
-[[sprites]]
-subject = "ghost"
-actions = ["sway"]
+actions = ["hop", "bob", "sway"]
 
 [[sprites]]
 subject = "slime"
-actions = ["hop"]
-[[sprites]]
-subject = "slime"
-actions = ["bob"]
-[[sprites]]
-subject = "slime"
-actions = ["sway"]
+actions = ["hop", "bob", "sway"]
 
 [[sprites]]
 subject = "toy robot"
-actions = ["hop"]
-[[sprites]]
-subject = "toy robot"
-actions = ["bob"]
-[[sprites]]
-subject = "toy robot"
-actions = ["sway"]
+actions = ["hop", "bob", "sway"]
 
 [[sprites]]
 subject = "candle"
-actions = ["hop"]
-[[sprites]]
-subject = "candle"
-actions = ["bob"]
-[[sprites]]
-subject = "candle"
-actions = ["sway"]
+actions = ["hop", "bob", "sway"]
 
 [[sprites]]
 subject = "cup of coffee"
-actions = ["hop"]
-[[sprites]]
-subject = "cup of coffee"
-actions = ["bob"]
-[[sprites]]
-subject = "cup of coffee"
-actions = ["sway"]
+actions = ["hop", "bob", "sway"]
 
 # A subject with no sprite that has room for a motion is skipped for it, with a warning.
 [actions.hop]
