@@ -105,14 +105,25 @@ class DiffusersWanBackend:
             pipe.enable_model_cpu_offload()
         else:
             pipe.to("cuda")
+        # Decoding 49 frames at 1280x704 in one pass needs more than an L4's 22 GB
+        # (observed OOM in vae.decode); tiled decoding bounds peak memory.
+        pipe.vae.enable_tiling()
         self.pipe, self.torch = pipe, torch
         self.info = {
             "backend": "diffusers",
             "model_id": model_id,
             "model_revision": resolved,
             "offload": offload,
+            "vae_tiling": True,
             **_torch_runtime(torch),
         }
+
+    def release_memory(self) -> None:
+        """Drop cached CUDA blocks after a failed job so the next job starts clean."""
+        import gc
+
+        gc.collect()
+        self.torch.cuda.empty_cache()
 
     def __call__(self, job: dict, reference_rgb: np.ndarray) -> np.ndarray:
         from PIL import Image
@@ -245,6 +256,9 @@ def generate(
                 )
                 counts["failed"] += 1
                 log.error("job %s failed: %s", jid, rec["error"])
+                release = getattr(backend, "release_memory", None)
+                if release:
+                    release()
             rec["generate_seconds"] = round(time.monotonic() - t1, 2)
             rec["finished_at"] = _now()
             append_jsonl(results, rec)

@@ -15,10 +15,15 @@ import argparse
 import importlib.metadata as md
 import json
 import logging
+import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
+
+# Must be set before torch initialises CUDA. Reduces fragmentation: the first L4 OOM
+# reported 4.7 GB reserved-but-unallocated memory.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # diffusers' Wan2.2 support may require a recent build; pin once a version is verified.
 GPU_DEPS = [
