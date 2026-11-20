@@ -71,7 +71,9 @@ steps = 4        # step-distilled by the Lightning LoRAs below
 guidance = 1.0   # the distilled model runs without CFG (negative prompt is unused)
 guidance_2 = 1.0
 negative_prompt = ""
-offload = false  # fp8 storage keeps both experts + text encoder on an 80 GB / 40 GB GPU
+# CPU offload is needed on a 40 GB A100 (both experts + text encoder do not fit at once).
+# scripts/colab_pilot.py offloads by default; pass --no-offload on an 80 GB GPU.
+offload = true
 quantization = "fp8_storage"
 
 [[generation.loras]]

@@ -104,20 +104,8 @@ class DiffusersWanBackend:
         pipe = WanImageToVideoPipeline.from_pretrained(
             model_id, vae=vae, torch_dtype=torch.bfloat16, revision=resolved
         )
-        timings = {}
-        t = time.monotonic()
+        timings = apply_model_options(pipe, model, torch)
         loras = model.get("loras", [])
-        if loras:
-            _merge_loras(pipe, loras)
-        timings["lora_merge_seconds"] = round(time.monotonic() - t, 2)
-        if model.get("quantization") == "fp8_storage":
-            # after merging, so the float8 copies already include the LoRA deltas
-            for name in ("transformer", "transformer_2"):
-                module = getattr(pipe, name, None)
-                if module is not None:
-                    module.enable_layerwise_casting(
-                        storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16
-                    )
         if offload:
             pipe.enable_model_cpu_offload()
         else:
@@ -167,6 +155,27 @@ class DiffusersWanBackend:
             output_type="np",
         ).frames[0]
         return (np.clip(out, 0.0, 1.0) * 255).round().astype(np.uint8)
+
+
+def apply_model_options(pipe, model: dict, torch) -> dict[str, float]:
+    """Merge LoRAs, then (optionally) store transformer weights in fp8.
+
+    The order matters: fp8 storage must see the merged weights, otherwise the
+    LoRA deltas would be applied on top of already-quantised weights.
+    """
+    t = time.monotonic()
+    loras = model.get("loras", [])
+    if loras:
+        _merge_loras(pipe, loras)
+    timings = {"lora_merge_seconds": round(time.monotonic() - t, 2)}
+    if model.get("quantization") == "fp8_storage":
+        for name in ("transformer", "transformer_2"):
+            module = getattr(pipe, name, None)
+            if module is not None:
+                module.enable_layerwise_casting(
+                    storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16
+                )
+    return timings
 
 
 def _merge_loras(pipe, loras: list[dict]) -> None:

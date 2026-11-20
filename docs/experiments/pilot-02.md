@@ -12,7 +12,7 @@ Pilot 01（`pilot-01.md`, TI2V-5B）と同じ 12 組（題材・動作・プロ�
 | 重み | bf16 | 融合後に fp8 で保持（計算は bf16） |
 | 解像度 / フレーム | 1280×704, 49 frames @ 24 fps | 832×480, 49 frames @ 16 fps |
 | 参照画像 | 28 倍（448 px） | 24 倍（384 px） |
-| GPU | Colab L4 (22.5 GB), CPU offload | Colab A100 40 GB, CPU offload |
+| GPU | Colab L4 (22.5 GB), CPU offload | Colab A100 40 GB, CPU offload（`scripts/colab_pilot.py` の既定。`--no-offload` なし） |
 | 環境 | torch 2.14.1+cu130, diffusers 0.42.1 | 同左 + peft 0.21.2（torchao 0.10.0 は削除） |
 
 ## 実測
