@@ -153,3 +153,107 @@ def test_offload_is_validated(smoke_cfg):
     path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "maybe"'))
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+class _Mod:
+    def __init__(self):
+        self.device = "cpu"
+
+    def to(self, device):
+        self.device = device
+        return self
+
+
+class _FakeTorch:
+    class cuda:  # noqa: N801
+        @staticmethod
+        def empty_cache():
+            pass
+
+    @staticmethod
+    def device(name):
+        return name
+
+    @staticmethod
+    def inference_mode():
+        import contextlib
+
+        return contextlib.nullcontext()
+
+
+class _FakeWanPipe:
+    def __init__(self):
+        self.text_encoder, self.transformer, self.transformer_2, self.vae = (
+            _Mod(),
+            _Mod(),
+            _Mod(),
+            _Mod(),
+        )
+        self.encoded = []
+
+    def __call__(self, image=None, prompt=None, max_sequence_length=512):
+        pass
+
+    def encode_prompt(self, prompt, negative_prompt, do_classifier_free_guidance, **kw):
+        assert self.text_encoder.device == "cuda"  # one encoding path: on the GPU
+        assert self.transformer.device == "cpu"  # before the experts move in
+        self.encoded.append((prompt, kw["max_sequence_length"], kw["device"]))
+
+        class T:
+            def cpu(self):
+                return self
+
+        return T(), T()
+
+
+def _resident_backend():
+    from dotkoma.generate import DiffusersWanBackend
+
+    b = DiffusersWanBackend.__new__(DiffusersWanBackend)
+    b.pipe, b.torch, b.mode, b.resident, b.prompt_cache, b.info = (
+        _FakeWanPipe(),
+        _FakeTorch(),
+        "resident",
+        False,
+        {},
+        {},
+    )
+    return b
+
+
+def test_resident_prepare_encodes_once_with_the_pipeline_length():
+    import pytest
+
+    b = _resident_backend()
+    pipe = b.pipe
+    jobs = [{"prompt": p, "negative_prompt": ""} for p in ("a", "b", "a")]
+    b.prepare(jobs)
+    assert pipe.encoded == [("a", 512, "cuda"), ("b", 512, "cuda")]
+    assert b.resident and pipe.text_encoder is None
+    assert pipe.transformer.device == pipe.transformer_2.device == pipe.vae.device == "cuda"
+    b.prepare(jobs[:1])  # known prompts: fine
+    with pytest.raises(RuntimeError, match="after the experts became resident"):
+        b.prepare([{"prompt": "new", "negative_prompt": ""}])
+
+
+def test_resident_placement_is_part_of_job_id(smoke_cfg):
+    import pytest
+
+    from dotkoma.config import load_config
+    from dotkoma.generate import load_backend
+    from dotkoma.prepare import model_spec, prepare
+    from dotkoma.records import read_jsonl
+
+    before = {j["job_id"] for j in read_jsonl(prepare(smoke_cfg))}
+    path = smoke_cfg.config_path
+    text = path.read_text()
+    for value in ("true", "false", '"model"', '"none"'):  # runtime choices: same ids
+        path.write_text(text.replace('backend = "fake"', f'backend = "fake"\noffload = {value}'))
+        cfg = load_config(path, work_dir=smoke_cfg.work_dir)
+        assert {j["job_id"] for j in read_jsonl(prepare(cfg))} == before
+    path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "resident"'))
+    cfg = load_config(path, work_dir=smoke_cfg.work_dir)
+    assert model_spec(cfg.generation)["placement"] == "resident"
+    assert {j["job_id"] for j in read_jsonl(prepare(cfg))}.isdisjoint(before)
+    with pytest.raises(ValueError, match="config"):
+        load_backend({"backend": "diffusers", "id": "x", "revision": "y"}, "resident")

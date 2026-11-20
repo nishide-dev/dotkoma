@@ -106,7 +106,8 @@ class GenerationConfig:
     negative_prompt: str = ""
     seed: int | None = None  # fixed seed; None derives one per (row_id, action)
     # true / "model": CPU offload per component; false / "none"; "resident": encode prompts
-    # first, then keep both experts and the VAE on the GPU (needs ~32 GB with fp8 storage)
+    # first, then keep both experts and the VAE on the GPU (needs ~30 GB with fp8 storage).
+    # model / none are runtime choices; resident changes outputs slightly, so it is in job_id
     offload: bool | str = True
     # Tiled VAE decoding changes the decoded pixels slightly. Tiled is the baseline
     # (every pilot video was decoded tiled); full decoding adds "vae_decode" to job_id.

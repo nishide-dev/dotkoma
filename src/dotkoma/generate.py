@@ -136,43 +136,50 @@ class DiffusersWanBackend:
         }
 
     def prepare(self, jobs: list[dict]) -> None:
-        """resident mode: encode every prompt of this group once, then drop the text
+        """resident mode: encode every prompt once on the GPU, then drop the text
         encoder and keep the denoisers and the VAE on the GPU.
 
-        Pilot measurements (A100 40 GB, model offload): of 61 s per video, about 33 s
-        were spent moving the text encoder and the two 14B experts in and out.
+        All prompts must be known before the experts move in (one encoding path for
+        every job). A prompt that shows up later is an error, not a silent CPU
+        encode. Pilot measurements (A100 40 GB, model offload): of 61 s per video,
+        about 33 s were spent moving the text encoder and the two experts around.
         """
         if self.mode != "resident":
             return
         pipe, torch = self.pipe, self.torch
-        todo = {(j["prompt"], j["negative_prompt"] or "") for j in jobs}
-        todo -= set(self.prompt_cache)
-        if not hasattr(self, "text_encoder"):
-            self.text_encoder = pipe.text_encoder  # kept on the CPU for later prompts
-        if todo:
-            # first group: encode on the GPU before the experts move in; later groups
-            # (e.g. another run sharing this backend) encode on the CPU instead
-            device = torch.device("cpu" if self.resident else "cuda")
-            pipe.text_encoder = self.text_encoder.to(device)
-            with torch.inference_mode():
-                for prompt, negative in sorted(todo):
-                    pos, neg = pipe.encode_prompt(
-                        prompt=prompt,
-                        negative_prompt=negative or None,
-                        do_classifier_free_guidance=True,
-                        device=device,
-                    )
-                    self.prompt_cache[(prompt, negative)] = (pos.cpu(), neg.cpu())
-            self.text_encoder.to("cpu")
-        pipe.text_encoder = None  # so the pipeline's execution device is the GPU
+        todo = {(j["prompt"], j["negative_prompt"] or "") for j in jobs} - set(self.prompt_cache)
         if self.resident:
+            if todo:
+                raise RuntimeError(
+                    f"{len(todo)} prompts arrived after the experts became resident; "
+                    "pass every job to prepare() before generating"
+                )
             return
+        # the same sequence length the pipeline uses when it encodes the prompt itself
+        # (encode_prompt's own default is shorter)
+        import inspect
+
+        max_len = inspect.signature(pipe.__call__).parameters["max_sequence_length"].default
+        pipe.text_encoder.to("cuda")
+        with torch.inference_mode():
+            for prompt, negative in sorted(todo):
+                pos, neg = pipe.encode_prompt(
+                    prompt=prompt,
+                    negative_prompt=negative or None,
+                    do_classifier_free_guidance=True,
+                    max_sequence_length=max_len,
+                    device=torch.device("cuda"),
+                )
+                self.prompt_cache[(prompt, negative)] = (pos.cpu(), neg.cpu())
+        pipe.text_encoder.to("cpu")
+        pipe.text_encoder = None  # so the pipeline's execution device is the GPU
         for name in ("transformer", "transformer_2", "vae", "image_encoder"):
             module = getattr(pipe, name, None)
             if module is not None:
                 module.to("cuda")
         torch.cuda.empty_cache()
         self.resident = True
+        self.info["max_sequence_length"] = max_len
 
     def release_memory(self) -> None:
         """Drop cached CUDA blocks after a failed job so the next job starts clean."""
@@ -298,9 +305,15 @@ def offload_mode(offload: bool | str) -> str:
 
 
 def load_backend(model: dict, offload: bool | str) -> Backend:
+    """``offload`` (model / none) is a runtime choice; resident placement comes from the
+    job's model spec (it is part of job_id, see prepare.model_spec)."""
     if model["backend"] == "fake":
         return FakeBackend()
     if model["backend"] == "diffusers":
+        if model.get("placement") == "resident":
+            offload = "resident"
+        elif offload_mode(offload) == "resident":
+            raise ValueError("resident placement must be set in the config (it is in job_id)")
         return DiffusersWanBackend(model, offload=offload)
     raise ValueError(f"unknown backend {model['backend']!r}")
 
