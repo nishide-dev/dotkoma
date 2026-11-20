@@ -91,7 +91,7 @@ def _shift(img: np.ndarray, dy: int, dx: int, fill: np.ndarray) -> np.ndarray:
 class DiffusersWanBackend:
     """Wan2.2 image->video through diffusers. Not exercised by the CPU test suite."""
 
-    def __init__(self, model: dict, offload: bool = True) -> None:
+    def __init__(self, model: dict, offload: bool | str = True) -> None:
         import torch
         from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
         from huggingface_hub import HfApi
@@ -106,10 +106,16 @@ class DiffusersWanBackend:
         )
         timings = apply_model_options(pipe, model, torch)
         loras = model.get("loras", [])
-        if offload:
+        mode = offload_mode(offload)
+        if mode == "model":
             pipe.enable_model_cpu_offload()
-        else:
+        elif mode == "none":
             pipe.to("cuda")
+        # "resident": everything but the text encoder goes to the GPU in prepare(), after
+        # the prompts are encoded; nothing moves between CPU and GPU per job after that.
+        self.mode = mode
+        self.resident = False  # set once the experts and the VAE are on the GPU
+        self.prompt_cache: dict[tuple[str, str], tuple] = {}
         # Decoding 49 frames at 1280x704 in one pass needs more than an L4's 22 GB
         # (observed OOM in vae.decode); tiled decoding bounds peak memory. The mode is
         # part of job_id via model["vae_decode"] (absent = tiled).
@@ -121,13 +127,52 @@ class DiffusersWanBackend:
             "backend": "diffusers",
             "model_id": model_id,
             "model_revision": resolved,
-            "offload": offload,
+            "offload": mode,
             "vae_tiling": vae_tiling,
             "loras": loras,
             "quantization": model.get("quantization", "none"),
             **timings,
             **_torch_runtime(torch),
         }
+
+    def prepare(self, jobs: list[dict]) -> None:
+        """resident mode: encode every prompt of this group once, then drop the text
+        encoder and keep the denoisers and the VAE on the GPU.
+
+        Pilot measurements (A100 40 GB, model offload): of 61 s per video, about 33 s
+        were spent moving the text encoder and the two 14B experts in and out.
+        """
+        if self.mode != "resident":
+            return
+        pipe, torch = self.pipe, self.torch
+        todo = {(j["prompt"], j["negative_prompt"] or "") for j in jobs}
+        todo -= set(self.prompt_cache)
+        if not hasattr(self, "text_encoder"):
+            self.text_encoder = pipe.text_encoder  # kept on the CPU for later prompts
+        if todo:
+            # first group: encode on the GPU before the experts move in; later groups
+            # (e.g. another run sharing this backend) encode on the CPU instead
+            device = torch.device("cpu" if self.resident else "cuda")
+            pipe.text_encoder = self.text_encoder.to(device)
+            with torch.inference_mode():
+                for prompt, negative in sorted(todo):
+                    pos, neg = pipe.encode_prompt(
+                        prompt=prompt,
+                        negative_prompt=negative or None,
+                        do_classifier_free_guidance=True,
+                        device=device,
+                    )
+                    self.prompt_cache[(prompt, negative)] = (pos.cpu(), neg.cpu())
+            self.text_encoder.to("cpu")
+        pipe.text_encoder = None  # so the pipeline's execution device is the GPU
+        if self.resident:
+            return
+        for name in ("transformer", "transformer_2", "vae", "image_encoder"):
+            module = getattr(pipe, name, None)
+            if module is not None:
+                module.to("cuda")
+        torch.cuda.empty_cache()
+        self.resident = True
 
     def release_memory(self) -> None:
         """Drop cached CUDA blocks after a failed job so the next job starts clean."""
@@ -141,10 +186,25 @@ class DiffusersWanBackend:
 
         inf = job["inference"]
         gen = self.torch.Generator(device="cpu").manual_seed(int(job["seed"]))
+        cuda = self.torch.cuda
+        cuda.reset_peak_memory_stats()
+        cuda.synchronize()
+        t0 = time.perf_counter()
+        step_ends: list[float] = []
+
+        def on_step(pipe, step, timestep, kwargs):
+            cuda.synchronize()
+            step_ends.append(time.perf_counter())
+            return kwargs
+
+        if self.mode == "resident":
+            pos, neg = self.prompt_cache[(job["prompt"], job["negative_prompt"] or "")]
+            text = {"prompt_embeds": pos.to("cuda"), "negative_prompt_embeds": neg.to("cuda")}
+        else:
+            text = {"prompt": job["prompt"], "negative_prompt": job["negative_prompt"] or None}
         out = self.pipe(
             image=Image.fromarray(reference_rgb),
-            prompt=job["prompt"],
-            negative_prompt=job["negative_prompt"] or None,
+            **text,
             height=inf["height"],
             width=inf["width"],
             num_frames=inf["num_frames"],
@@ -153,7 +213,20 @@ class DiffusersWanBackend:
             num_inference_steps=inf["steps"],
             generator=gen,
             output_type="np",
+            callback_on_step_end=on_step,
         ).frames[0]
+        cuda.synchronize()
+        t_end = time.perf_counter()
+        # Where the time goes (seconds). "until_first_step" covers prompt/image encoding,
+        # offload transfers and the first denoising step; "after_last_step" is mostly
+        # the VAE decode.
+        self.last_timings = {
+            "until_first_step": round(step_ends[0] - t0, 2) if step_ends else None,
+            "steps": [round(b - a, 2) for a, b in zip(step_ends, step_ends[1:], strict=False)],
+            "after_last_step": round(t_end - step_ends[-1], 2) if step_ends else None,
+            "total": round(t_end - t0, 2),
+            "peak_gpu_gb": round(cuda.max_memory_allocated() / 2**30, 2),
+        }
         return (np.clip(out, 0.0, 1.0) * 255).round().astype(np.uint8)
 
 
@@ -212,7 +285,19 @@ def _torch_runtime(torch) -> dict[str, Any]:
     return info
 
 
-def load_backend(model: dict, offload: bool) -> Backend:
+def offload_mode(offload: bool | str) -> str:
+    """true / "model": diffusers model CPU offload; false / "none": all on GPU;
+    "resident": prompts encoded up front, then denoisers + VAE stay on the GPU."""
+    if offload is True or offload == "model":
+        return "model"
+    if offload is False or offload == "none":
+        return "none"
+    if offload == "resident":
+        return "resident"
+    raise ValueError(f"unknown offload mode {offload!r}")
+
+
+def load_backend(model: dict, offload: bool | str) -> Backend:
     if model["backend"] == "fake":
         return FakeBackend()
     if model["backend"] == "diffusers":
@@ -266,7 +351,7 @@ def generate(
     *,
     limit: int | None = None,
     retry_failed: bool = False,
-    offload: bool = True,
+    offload: bool | str = True,
     pix_fmt: str = "yuv444p",
     crf: int = 10,
     sync_dir: str | Path | None = None,
@@ -291,6 +376,8 @@ def generate(
         t0 = time.monotonic()
         backend = backend_factory(jobs[0]["model"], offload)
         load_s = round(time.monotonic() - t0, 2)
+        if hasattr(backend, "prepare"):
+            backend.prepare(jobs)
         log.info("loaded %s in %.1fs; %d jobs", model_id or "fake", load_s, len(jobs))
         runtime = {"python": platform.python_version(), "host": platform.node(), **backend.info}
 
@@ -316,6 +403,8 @@ def generate(
                     dst = Path(sync_dir) / "raw" / out.name
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     copy_atomic(out, dst)
+                if getattr(backend, "last_timings", None):
+                    rec["timings"] = backend.last_timings
                 rec.update(
                     status="ok",
                     raw_path=out.relative_to(run_dir).as_posix(),

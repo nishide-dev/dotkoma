@@ -105,11 +105,16 @@ def record_env(run_dir: Path) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("run_dir", type=Path)
+    p.add_argument("run_dir", type=Path, nargs="+", help="several runs share one model load")
     p.add_argument("--limit", type=int)
     p.add_argument("--retry-failed", action="store_true")
     p.add_argument("--sync-dir", help="e.g. /content/drive/MyDrive/dotkoma/pilot")
     p.add_argument("--no-offload", action="store_true", help="keep the whole model on GPU")
+    p.add_argument(
+        "--offload",
+        choices=["model", "none", "resident"],
+        help="override: model (CPU offload), none, resident (prompts first, then all on GPU)",
+    )
     p.add_argument("--skip-install", action="store_true")
     p.add_argument("--stage", choices=["generate", "plan"], default="generate")
     a = p.parse_args()
@@ -120,23 +125,39 @@ def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / "src"))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    print(json.dumps(record_env(a.run_dir)), flush=True)
+    for run_dir in a.run_dir:
+        print(json.dumps(record_env(run_dir)), flush=True)
     if a.stage == "plan":
         from dotkoma.plan import plan
 
-        counts = plan(a.run_dir, limit=a.limit, retry_failed=a.retry_failed, sync_dir=a.sync_dir)
-        print(json.dumps(counts), flush=True)
+        for run_dir in a.run_dir:
+            counts = plan(run_dir, limit=a.limit, retry_failed=a.retry_failed, sync_dir=a.sync_dir)
+            print(run_dir, json.dumps(counts), flush=True)
         return
+    from dotkoma.generate import load_backend
+
+    loaded: dict[str, object] = {}
+
+    def shared(model: dict, offload: bool):
+        """Reuse one loaded model across runs with the same model spec."""
+        key = json.dumps([model, offload], sort_keys=True)
+        if key not in loaded:
+            loaded.clear()  # a different model: let the previous one go first
+            loaded[key] = load_backend(model, offload)
+        return loaded[key]
+
     from dotkoma.generate import generate
 
-    counts = generate(
-        a.run_dir,
-        limit=a.limit,
-        retry_failed=a.retry_failed,
-        offload=not a.no_offload,
-        sync_dir=a.sync_dir,
-    )
-    print(json.dumps(counts), flush=True)
+    for run_dir in a.run_dir:
+        counts = generate(
+            run_dir,
+            limit=a.limit,
+            retry_failed=a.retry_failed,
+            offload=a.offload or ("none" if a.no_offload else "model"),
+            sync_dir=a.sync_dir,
+            backend_factory=shared,
+        )
+        print(run_dir, json.dumps(counts), flush=True)
 
 
 if __name__ == "__main__":

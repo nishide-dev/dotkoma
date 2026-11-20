@@ -127,3 +127,29 @@ def test_defaults_keep_the_model_spec_unchanged(smoke_cfg):
     for j in read_jsonl(prepare(smoke_cfg)):
         assert set(j["model"]) == {"backend", "id", "revision"}
         assert "guidance_2" not in j["inference"]
+
+
+def test_offload_modes():
+    import pytest
+
+    from dotkoma.generate import offload_mode
+
+    assert offload_mode(True) == offload_mode("model") == "model"
+    assert offload_mode(False) == offload_mode("none") == "none"
+    assert offload_mode("resident") == "resident"
+    with pytest.raises(ValueError):
+        offload_mode("sometimes")
+
+
+def test_offload_is_validated(smoke_cfg):
+    import pytest
+
+    from dotkoma.config import ConfigError, load_config
+
+    path = smoke_cfg.config_path
+    text = path.read_text()
+    path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "resident"'))
+    assert load_config(path).generation.offload == "resident"
+    path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "maybe"'))
+    with pytest.raises(ConfigError):
+        load_config(path)

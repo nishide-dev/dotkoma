@@ -1,0 +1,131 @@
+# Speed probe d: smaller canvas, 25 frames. Same 8 sprites, actions, template prompts (variant 0) and
+# seeds in speed/a-d; only the canvas and frame count differ. See docs/experiments/speed-01.md.
+version = "speed-01d"
+
+[run]
+name = "speed-01d"
+work_dir = "work"
+
+[source]
+kind = "atlas"
+repo_id = "Angais/pixel-art-atlas-1.4m"
+revision = "bf78f8c8cbafa6d07718111a94d41e2dd79ddaa7"
+shards = ["data/train-000.parquet"]
+
+[[sprites]]
+subject = "candle"
+actions = ["flicker"]
+
+[[sprites]]
+subject = "torch"
+actions = ["flicker"]
+
+[[sprites]]
+subject = "tea light"
+actions = ["flicker"]
+
+[[sprites]]
+subject = "cup of herbal tea"
+actions = ["steam"]
+
+[[sprites]]
+subject = "soup bowl"
+actions = ["steam"]
+
+[[sprites]]
+subject = "chimney"
+actions = ["smoke"]
+
+[[sprites]]
+subject = "cooking cauldron"
+actions = ["bubble"]
+
+[[sprites]]
+subject = "owl"
+actions = ["blink"]
+
+# {subject} and {caption} are filled from the Atlas row. Both wordings share a seed.
+[actions.flicker]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. Only the flame flickers gently, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. The flame sways and changes shape slightly in a gentle loop, nothing else moves. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.steam]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. Small wisps of steam rise from the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. Thin curls of white steam drift upward above the {subject} and fade, the {subject} does not move. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.smoke]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. A thin trail of grey smoke rises from the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. Small puffs of smoke drift slowly upward and fade, the {subject} does not move. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.bubble]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. Small bubbles rise and pop inside the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. The liquid in the {subject} bubbles gently, the container does not move. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.sparkle]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. A small bright sparkle glints across the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. Tiny twinkling highlights appear and fade on the {subject}, nothing else changes. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.flutter]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. The cloth of the flag ripples in the wind, the pole stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. The flag waves gently back and forth in a breeze, the pole does not move. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.blink]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. The {subject} blinks its eyes once, everything else stays still. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. The {subject} closes its eyes briefly and opens them again, its body does not move. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+[actions.wag]
+motion = "local"
+prompts = [
+  "A pixel art {subject} on a flat solid background. The {subject} wags its tail, its body stays in place. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+  "A pixel art {subject} on a flat solid background. Only the tail of the {subject} swings from side to side, the rest does not move. Static camera, fixed viewpoint, same colors, crisp pixel art.",
+]
+
+
+[generation]
+backend = "diffusers"
+model_id = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+model_revision = "596658fd9ca6b7b71d5057529bbf319ecbc61d74"
+width = 576
+height = 336
+num_frames = 25  # Wan needs 4k+1 frames
+fps = 16
+steps = 4        # step-distilled by the Lightning LoRAs below
+guidance = 1.0   # the distilled model runs without CFG (negative prompt is unused)
+guidance_2 = 1.0
+negative_prompt = ""
+# CPU offload is needed on a 40 GB A100 (both experts + text encoder do not fit at once).
+# scripts/colab_pilot.py offloads by default; pass --no-offload on an 80 GB GPU.
+offload = true
+quantization = "fp8_storage"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer_2"
+
+[reference]
+scale = 18
+
+[finalize]
+num_frames = 6
