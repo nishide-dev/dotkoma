@@ -42,8 +42,10 @@ from .imaging import (
     measure_background,
     opaque_colors,
     reduce_frame,
+    rgb_to_hex,
     save_png,
     snap_to_palette,
+    stable_new_colors,
     write_gif,
 )
 from .records import latest_by_job, read_jsonl, stable_hash, write_json_atomic, write_jsonl_atomic
@@ -186,7 +188,6 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
     source = load_rgba(run_dir / job["input_png"])
 
     idx, durations = select_frames(len(video), fps, sel, cfg.num_frames)
-    palette = opaque_colors(source) if cfg.palette == "source" else np.zeros((0, 3), np.uint8)
     # Wan reproduces frame 0 from the reference and then drifts the flat key colour
     # slightly, so "per_frame" re-measures it on each frame's border (same rule, own value).
     bg0 = measure_background(video[0])
@@ -198,13 +199,17 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
         bg = measured if cfg.background == "per_frame" else bg0
         backgrounds.append([round(float(c), 1) for c in bg])
         mask = foreground_mask(video[i], bg, cfg.bg_tolerance)
-        f = reduce_frame(video[i], mask, box, cfg.coverage_threshold)
-        frames.append(snap_to_palette(f, palette))
+        frames.append(reduce_frame(video[i], mask, box, cfg.coverage_threshold))
         edge = max(edge, edge_cut_fraction(mask, box))
         border = max(border, border_foreground_fraction(mask))
 
+    # one palette for the whole loop, decided after seeing every frame
+    palette, added = loop_palette(frames, source, cfg)
+    frames = [snap_to_palette(f, palette) for f in frames]
+
     checks = run_checks(frames, source, edge, border, cfg)
     checks["background_drift"] = round(drift, 1)
+    checks["added_colors"] = [rgb_to_hex(c) for c in added]
     pp_id = stable_hash({"finalize": cfg.__dict__, "selection": sel or {}}, 12)
     extra = {
         "source_frame_indices": idx,
@@ -212,6 +217,26 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
         "background_rgb": backgrounds,
     }
     return _write_sample(run_dir, job, frames, durations, checks, pp_id, extra, cfg)
+
+
+def loop_palette(
+    frames: list[np.ndarray], source: np.ndarray, cfg: FinalizeConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """(palette to snap every frame to, the colours added beyond the source's)."""
+    none = np.zeros((0, 3), np.uint8)
+    if cfg.palette == "none":
+        return none, none
+    base = opaque_colors(source)
+    if cfg.palette == "source":
+        return base, none
+    added = stable_new_colors(
+        frames,
+        base,
+        cfg.new_color_distance,
+        cfg.new_color_min_frame_share,
+        cfg.new_color_min_pixels,
+    )
+    return np.concatenate([base, added]), added
 
 
 def finalize_pixel_ops_job(run_dir: Path, job: dict, cfg: FinalizeConfig) -> dict[str, Any]:

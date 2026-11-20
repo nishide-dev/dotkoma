@@ -166,6 +166,48 @@ def snap_to_palette(rgba: np.ndarray, palette: np.ndarray) -> np.ndarray:
     return out
 
 
+def stable_new_colors(
+    frames: list[np.ndarray],
+    palette: np.ndarray,
+    min_distance: float,
+    min_frame_share: float,
+    min_pixels: int,
+) -> np.ndarray:
+    """Colours absent from ``palette`` that recur across the loop, shape (K, 3) uint8.
+
+    A video model may add a colour the sprite never had (the white of an opened
+    eye). Snapping to the source palette alone would erase it. Opaque pixels
+    farther than ``min_distance`` from every palette colour are grouped greedily
+    (in frame / raster order, so deterministic); a group is kept when it covers at
+    least ``min_pixels`` pixels in at least ``min_frame_share`` of the frames.
+    One-off colours (a passing artefact, a frame of transformation) are dropped
+    and later snapped back to the palette.
+    """
+    pal = palette.astype(np.float32).reshape(-1, 3)
+    groups: list[dict] = []  # {"sum", "members", "frames": Counter-like dict}
+    for k, f in enumerate(frames):
+        px = f[f[..., 3] > 0][:, :3].astype(np.float32)
+        if len(pal):
+            px = px[np.linalg.norm(px[:, None] - pal[None], axis=-1).min(axis=1) > min_distance]
+        for c in px:
+            for g in groups:
+                if np.linalg.norm(g["sum"] / len(g["members"]) - c) <= min_distance / 2:
+                    break
+            else:
+                g = {"sum": np.zeros(3, np.float32), "members": [], "frames": {}}
+                groups.append(g)
+            g["sum"] += c
+            g["members"].append(c)
+            g["frames"][k] = g["frames"].get(k, 0) + 1
+    need = max(1, int(np.ceil(min_frame_share * len(frames))))
+    kept = [
+        np.median(np.array(g["members"]), axis=0).round()
+        for g in groups
+        if sum(n >= min_pixels for n in g["frames"].values()) >= need
+    ]
+    return np.array(kept, np.uint8).reshape(-1, 3)
+
+
 def edge_cut_fraction(mask: np.ndarray, box: GridBox) -> float:
     """Share of the ring just outside the grid that is foreground.
 

@@ -22,6 +22,7 @@
 - `pixel_ops` の動作は、動作ごとに別々に元絵を選ぶ。候補はその動きで 16×16 からはみ出さない元絵だけで、1 体もなければ警告を出してその（題材, 動作）のジョブを作らない。`row_id` 指定の元絵が収まらない場合も同様に飛ばす。動画の動作は従来どおりの順で選ぶ（既存の `job_id` は変わらない）。Atlas の元絵は枠いっぱいに描かれたものが多い。
 - `pixel_ops` ジョブの `job_id` には元絵の画素のハッシュ（`sprite_sha256`）も入り、ジョブにも記録する。ローカルの元絵を書き換えれば別ジョブになる。finalize は `input_png` の画素がこのハッシュと一致しなければそのジョブを `finalize_failed` にする（prepare の中断などで入力とジョブが食い違った場合）。
 - `[generation]` は `pixel_ops` の動作だけの設定では省略できる（backend `none`）。
+- 色はループ全体で 1 つのパレットに寄せる（`finalize.palette`）。既定の `source+stable` は、元絵の色に「元絵のどの色からも `new_color_distance`（RGB 距離 80）より離れ、`new_color_min_frame_share`（半分）以上のコマに `new_color_min_pixels`（2 px）以上ずつ現れる色」を加える（開いた目の白など）。一部のコマにしか出ない色（変形途中・一瞬のノイズ）は元絵の色に寄せる。加えた色は `checks.added_colors` に残す。`source` は元絵の色だけ、`none` は寄せない。
 - `finalize` は元動画を読み直すだけなので、後処理設定やコマ選択を変えて何度でもやり直せる。
 
 ## 品質チェック（`sample.json` の `checks`）
