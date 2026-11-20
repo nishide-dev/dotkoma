@@ -65,7 +65,9 @@ def record_env(run_dir: Path) -> dict:
         env["nvidia_smi"] = smi.stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         env["nvidia_smi"] = None
-    (run_dir / "colab_env.json").write_text(json.dumps(env, indent=2) + "\n")
+    from dotkoma.records import write_json_atomic
+
+    write_json_atomic(run_dir / "colab_env.json", env)
     return env
 
 

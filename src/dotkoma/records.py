@@ -82,11 +82,42 @@ def write_jsonl_atomic(path: str | Path, rows: Iterable[dict[str, Any]]) -> None
 
 
 def append_jsonl(path: str | Path, row: dict[str, Any]) -> None:
-    """Append one record and fsync. Used for the append-only results log."""
+    """Append one record and fsync. Used for the append-only results log.
+
+    A crash mid-append can leave a torn last line. It is cut off before writing,
+    so the next record never lands after a corrupt line in the middle of the file.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _drop_torn_tail(path)
     with path.open("a", encoding="utf-8") as f:
         f.write(canonical_json(row) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _drop_torn_tail(path: Path) -> None:
+    if not path.exists():
+        return
+    with path.open("rb+") as f:
+        size = f.seek(0, os.SEEK_END)
+        if size == 0:
+            return
+        f.seek(size - 1)
+        if f.read(1) == b"\n":
+            return
+        # scan back to the last complete line
+        pos, chunk = size, 4096
+        while pos > 0:
+            start = max(0, pos - chunk)
+            f.seek(start)
+            nl = f.read(pos - start).rfind(b"\n")
+            if nl != -1:
+                f.truncate(start + nl + 1)
+                break
+            pos = start
+        else:
+            f.truncate(0)
         f.flush()
         os.fsync(f.fileno())
 
