@@ -160,13 +160,9 @@ class DiffusersWanBackend:
         import inspect
 
         max_len = inspect.signature(pipe.__call__).parameters["max_sequence_length"].default
-        if len(todo) > MAX_RESIDENT_PROMPTS:
-            raise RuntimeError(
-                f"{len(todo)} distinct prompts exceed {MAX_RESIDENT_PROMPTS} for one resident "
-                "load (host RAM); split the jobs into several runs/sessions"
-            )
         pipe.text_encoder.to("cuda")
         negatives: dict[str, Any] = {}
+        cached_bytes = 0
         with torch.inference_mode():
             for prompt, negative in sorted(todo):
                 pos, neg = pipe.encode_prompt(
@@ -178,8 +174,17 @@ class DiffusersWanBackend:
                 )
                 # one copy per distinct negative prompt; drop the zero padding (restored
                 # exactly in _padded) so thousands of prompts fit in host RAM
-                neg = negatives.setdefault(negative, _trim(neg.cpu(), torch))
-                self.prompt_cache[(prompt, negative)] = (_trim(pos.cpu(), torch), neg)
+                if negative not in negatives:
+                    negatives[negative] = _trim(neg.cpu(), torch)
+                    cached_bytes += _nbytes(negatives[negative])
+                pos = _trim(pos.cpu(), torch)
+                cached_bytes += _nbytes(pos)
+                if cached_bytes > MAX_RESIDENT_CACHE_BYTES:
+                    raise RuntimeError(
+                        f"prompt embeddings exceed {MAX_RESIDENT_CACHE_BYTES / 2**30:.0f} GiB of "
+                        "host RAM for one resident load; split the jobs into several runs"
+                    )
+                self.prompt_cache[(prompt, negative)] = (pos, negatives[negative])
         pipe.text_encoder.to("cpu")
         self.max_len = max_len
         pipe.text_encoder = None  # so the pipeline's execution device is the GPU
@@ -305,9 +310,14 @@ def _torch_runtime(torch) -> dict[str, Any]:
     return info
 
 
-# Distinct prompts encoded up front by one resident backend. Trimmed embeddings are
-# ~4096 x 2 bytes per token; at ~100 tokens a prompt this bounds the cache to a few GB.
-MAX_RESIDENT_PROMPTS = 5000
+# Host RAM for the prompt embeddings one resident backend encodes up front (trimmed,
+# ~8 KiB per token: a typical ~100-token prompt is ~0.8 MiB). The A14B load itself
+# peaks near 84 GB of the A100 VM's RAM, so keep this small.
+MAX_RESIDENT_CACHE_BYTES = 4 * 2**30
+
+
+def _nbytes(emb) -> int:
+    return emb.numel() * emb.element_size()
 
 
 def _trim(emb, torch):

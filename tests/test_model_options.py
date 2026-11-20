@@ -227,6 +227,7 @@ def test_resident_prepare_encodes_once_with_the_pipeline_length(monkeypatch):
     import dotkoma.generate as gen
 
     monkeypatch.setattr(gen, "_trim", lambda emb, torch: emb)  # covered separately below
+    monkeypatch.setattr(gen, "_nbytes", lambda emb: 1)
     b = _resident_backend()
     pipe = b.pipe
     jobs = [{"prompt": p, "negative_prompt": ""} for p in ("a", "b", "a")]
@@ -237,9 +238,9 @@ def test_resident_prepare_encodes_once_with_the_pipeline_length(monkeypatch):
     b.prepare(jobs[:1])  # known prompts: fine
     with pytest.raises(RuntimeError, match="after the experts became resident"):
         b.prepare([{"prompt": "new", "negative_prompt": ""}])
-    monkeypatch.setattr(gen, "MAX_RESIDENT_PROMPTS", 1)
+    monkeypatch.setattr(gen, "_nbytes", lambda emb: 3 * 2**30)  # each embedding: 3 GiB
     with pytest.raises(RuntimeError, match="split the jobs"):
-        _resident_backend().prepare(jobs)
+        _resident_backend().prepare(jobs)  # 1 negative + 1 positive = 6 GiB > 4 GiB
 
 
 def test_resident_placement_is_part_of_job_id(smoke_cfg):
