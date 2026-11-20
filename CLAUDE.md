@@ -18,7 +18,7 @@ Dotkoma は、16×16 のドット絵ループアニメーションの学習用�
 | `generate` | Colab GPU | `raw/<job_id>.mp4`, `results.jsonl`（追記専用） |
 | `finalize` | 手元 CPU | `final/<job_id>/{frames/,sample.json,preview.gif}`, `finalize.jsonl` |
 
-ファイル契約・品質チェックの詳細は `README.md`。設計の背景はローカルの `dotkoma-project-report.pdf`（Git 管理外）。
+ファイル契約・品質チェックの詳細は `docs/pipeline.md`。設計の背景はローカルの `dotkoma-project-report.pdf`（Git 管理外）。
 
 ## 開発コマンド
 
@@ -40,6 +40,11 @@ uv run dotkoma {prepare,generate,finalize} configs/smoke.toml   # GPU なしで�
 - `requested_action`（指示）と採用ラベルを分ける。機械判定（`finalize.jsonl`）と目視採否（`review.jsonl`）も分ける
 - Git にはコード・設定・小さなテスト素材だけを入れる。モデル重み、元動画、実行記録（`work/`）、認証情報、PDF は入れない
 - コードは MIT。データの利用条件はコードと分けて `docs/dataset-card.md` に書く
+
+## ドキュメント
+
+- `README.md` は利用者向けで英語。開発段階や内部の進め方は書かない（active development である旨は残す）
+- 開発者向けの詳細（ファイル契約・品質チェックなど）は `docs/` に日本語で書く
 
 ## Git / GitHub のルール
 
