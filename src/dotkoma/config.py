@@ -135,10 +135,16 @@ class FinalizeConfig:
     edge_cut_fraction: float = 0.02
     # local motions (an arm, steam, a flame) may poke slightly out of the 16x16 grid;
     # up to this share it is a note ("edge_overflow"), not the edge_cut flag
-    edge_cut_local_fraction: float = 0.06
+    # None: max(0.06, edge_cut_fraction), so configs that raised edge_cut_fraction still load
+    edge_cut_local_fraction: float | None = None
     background_unstable_fraction: float = 0.05
     identity_drift_threshold: float = 0.3  # see finalize.identity_drift
     identity_max_shift: int = 4
+
+    def local_edge_limit(self) -> float:
+        if self.edge_cut_local_fraction is None:
+            return max(0.06, self.edge_cut_fraction)
+        return self.edge_cut_local_fraction
 
 
 @dataclass(frozen=True)
@@ -314,7 +320,7 @@ def _validate(cfg: Config) -> None:
     f = cfg.finalize
     if not (f.min_frames <= f.num_frames <= f.max_frames):
         raise ConfigError("finalize.num_frames must lie in [min_frames, max_frames]")
-    if f.edge_cut_local_fraction < f.edge_cut_fraction:
+    if f.edge_cut_local_fraction is not None and f.edge_cut_local_fraction < f.edge_cut_fraction:
         raise ConfigError("finalize.edge_cut_local_fraction must be >= edge_cut_fraction")
     if f.background not in ("per_frame", "first_frame"):
         raise ConfigError(f"unknown finalize.background {f.background!r}")
