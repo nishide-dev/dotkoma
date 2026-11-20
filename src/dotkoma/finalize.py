@@ -8,6 +8,10 @@ Outputs per job under ``final/<job_id>/``:
 ``finalize.jsonl`` lists every job's machine verdict. Human decisions live in
 ``review.jsonl`` (written by a person, never touched here).
 
+Jobs with ``generation_method = "pixel_ops"`` have no video: their frames are
+rendered here from the source sprite (see ``pixel_ops.py``) and go through the
+same checks and output format.
+
 Frame selection defaults to N evenly spaced frames over the whole clip. To
 override after looking at a clip, add a line to ``selections.jsonl``:
   {"job_id": "...", "start": 3, "end": 40}            # window, N frames
@@ -24,6 +28,7 @@ from typing import Any
 
 import numpy as np
 
+from . import pixel_ops
 from .config import FinalizeConfig
 from .generate import raw_path
 from .imaging import (
@@ -201,7 +206,40 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
     checks = run_checks(frames, source, edge, border, cfg)
     checks["background_drift"] = round(drift, 1)
     pp_id = stable_hash({"finalize": cfg.__dict__, "selection": sel or {}}, 12)
+    extra = {
+        "source_frame_indices": idx,
+        "source_fps": fps,
+        "background_rgb": backgrounds,
+    }
+    return _write_sample(run_dir, job, frames, durations, checks, pp_id, extra, cfg)
 
+
+def finalize_pixel_ops_job(run_dir: Path, job: dict, cfg: FinalizeConfig) -> dict[str, Any]:
+    """Frames are exact translations of the source sprite; no video is involved."""
+    source = load_rgba(run_dir / job["input_png"])
+    if pixel_ops.sprite_digest(source) != job["sprite_sha256"]:
+        # e.g. prepare was interrupted after rewriting inputs/ but before jobs.jsonl
+        raise ValueError(f"{job['input_png']} does not match the sprite this job was made for")
+    ops = job["pixel_ops"]
+    frames, lost = pixel_ops.render(source, ops["offsets"])
+    checks = run_checks(frames, source, lost, 0.0, cfg)
+    # check thresholds and preview_scale still apply (keying and palette settings do not)
+    pp_id = stable_hash({"finalize": cfg.__dict__, "pixel_ops": ops}, 12)
+    extra = {"pixel_ops": ops}
+    return _write_sample(run_dir, job, frames, ops["durations_ms"], checks, pp_id, extra, cfg)
+
+
+def _write_sample(
+    run_dir: Path,
+    job: dict,
+    frames: list[np.ndarray],
+    durations: list[int],
+    checks: dict[str, Any],
+    pp_id: str,
+    extra: dict[str, Any],
+    cfg: FinalizeConfig,
+) -> dict[str, Any]:
+    jid = job["job_id"]
     out = run_dir / "final" / jid
     tmp = run_dir / "final" / f".{jid}.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
@@ -222,9 +260,7 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
         "frames": [f"frames/{k:03d}.png" for k in range(len(frames))],
         "durations_ms": durations,
         "loop": True,
-        "source_frame_indices": idx,
-        "source_fps": fps,
-        "background_rgb": backgrounds,
+        **extra,
         "checks": checks,
     }
     write_json_atomic(tmp / "sample.json", sample)  # written last: marks completeness
@@ -249,13 +285,17 @@ def finalize(run_dir: str | Path, cfg: FinalizeConfig) -> list[dict]:
             "prompt_method": j["prompt_method"],
             "prompt_variant": j["prompt_variant"],
         }
+        pixel = j.get("generation_method") == "pixel_ops"
         r = results.get(jid)
-        if not r or r["status"] != "ok" or not raw_path(run_dir, jid).exists():
+        if not pixel and (not r or r["status"] != "ok" or not raw_path(run_dir, jid).exists()):
             status = r["status"] if r else "not_generated"
             index.append({**base, "status": "generation_" + status if r else status})
             continue
         try:
-            s = finalize_job(run_dir, j, cfg, selections.get(jid))
+            if pixel:
+                s = finalize_pixel_ops_job(run_dir, j, cfg)
+            else:
+                s = finalize_job(run_dir, j, cfg, selections.get(jid))
             c = s["checks"]
             index.append(
                 {

@@ -232,6 +232,8 @@ def pending_jobs(run_dir: Path, retry_failed: bool = False) -> list[dict]:
     last = latest_by_job(read_jsonl(run_dir / "results.jsonl"))
     out = []
     for j in jobs:
+        if j.get("generation_method", "video_model") != "video_model":
+            continue  # made locally by finalize (pixel_ops), never on the GPU
         r = last.get(j["job_id"])
         if r and r["status"] == "ok" and raw_path(run_dir, j["job_id"]).exists():
             continue

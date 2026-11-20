@@ -13,6 +13,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .pixel_ops import expand as expand_pixel_ops
+from .pixel_ops import validate as validate_pixel_ops
+
 
 @dataclass(frozen=True)
 class SourceConfig:
@@ -45,11 +48,17 @@ class ActionConfig:
     """
 
     name: str
-    prompts: tuple[str, ...]
+    prompts: tuple[str, ...] = ()
     motion: str = "global"  # "local" | "global": informational, used for coverage stats
     method: str = "template"  # how the prompts were written: "template" | "vlm" | ...
+    # "video_model": Wan2.2 on the GPU. "pixel_ops": move the 16x16 sprite itself
+    # (see pixel_ops.py); takes no prompts and never reaches the generate stage.
+    generation_method: str = "video_model"
+    pixel_ops: dict[str, Any] | None = None
 
     def variant_indices(self, selection: str | tuple[int, ...]) -> tuple[int, ...]:
+        if self.generation_method == "pixel_ops":
+            return (0,)  # no wording to vary
         if selection == "all":
             return tuple(range(len(self.prompts)))
         return tuple(selection)
@@ -68,7 +77,7 @@ class LoraConfig:
 
 @dataclass(frozen=True)
 class GenerationConfig:
-    backend: str  # "diffusers" | "fake"
+    backend: str  # "diffusers" | "fake" | "none" (only pixel_ops actions)
     model_id: str = ""
     model_revision: str = "main"
     width: int = 1280
@@ -171,8 +180,20 @@ def _action(name: str, spec: dict) -> ActionConfig:
     if "prompt" in spec:
         spec["prompts"] = [spec.pop("prompt")]
     prompts = _tuple(spec.pop("prompts", None))
-    if not prompts:
-        raise ConfigError(f"action {name!r}: needs at least one prompt")
+    method = spec.get("generation_method", "video_model")
+    if method == "video_model":
+        if not prompts:
+            raise ConfigError(f"action {name!r}: needs at least one prompt")
+        if "pixel_ops" in spec:
+            raise ConfigError(f"action {name!r}: pixel_ops needs generation_method = 'pixel_ops'")
+    elif method == "pixel_ops":
+        if prompts:
+            raise ConfigError(f"action {name!r}: pixel_ops actions take no prompts")
+        err = validate_pixel_ops(spec.get("pixel_ops") or {})
+        if err:
+            raise ConfigError(f"action {name!r}: {err}")
+    else:
+        raise ConfigError(f"action {name!r}: unknown generation_method {method!r}")
     return ActionConfig(name=name, prompts=prompts, **spec)
 
 
@@ -227,7 +248,7 @@ def load_config(path: str | Path, work_dir: str | Path | None = None) -> Config:
             source=source,
             sprites=sprites,
             actions=actions,
-            generation=_generation(raw["generation"]),
+            generation=_generation(raw.get("generation", {"backend": "none"})),
             reference=ReferenceConfig(**ref),
             finalize=FinalizeConfig(**raw.get("finalize", {})),
             split=SplitConfig(**raw.get("split", {})),
@@ -245,12 +266,25 @@ def _validate(cfg: Config) -> None:
         raise ConfigError(f"unknown source.kind {cfg.source.kind!r}")
     if cfg.source.kind == "atlas" and not cfg.source.revision:
         raise ConfigError("source.revision must pin a dataset commit for atlas sources")
-    if cfg.generation.backend not in ("diffusers", "fake"):
+    if cfg.generation.backend not in ("diffusers", "fake", "none"):
         raise ConfigError(f"unknown generation.backend {cfg.generation.backend!r}")
+    if cfg.generation.backend == "none":
+        video = sorted(
+            {
+                a
+                for p in cfg.sprites
+                for a in p.actions
+                if a in cfg.actions and cfg.actions[a].generation_method == "video_model"
+            }
+        )
+        if video:
+            raise ConfigError(f"actions {video} need a [generation] backend")
     for pick in cfg.sprites:
         for a in pick.actions:
             if a not in cfg.actions:
                 raise ConfigError(f"sprite {pick.subject!r} uses undefined action {a!r}")
+            if cfg.actions[a].generation_method == "pixel_ops":
+                continue
             n = len(cfg.actions[a].prompts)
             bad = [
                 i for i in cfg.actions[a].variant_indices(pick.prompt_variants) if not 0 <= i < n
@@ -274,5 +308,13 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("finalize.num_frames must lie in [min_frames, max_frames]")
     if f.background not in ("per_frame", "first_frame"):
         raise ConfigError(f"unknown finalize.background {f.background!r}")
+    for a in cfg.actions.values():
+        if a.pixel_ops is not None:
+            n = len(expand_pixel_ops(a.pixel_ops)["offsets"])
+            if not (f.min_frames <= n <= f.max_frames):
+                raise ConfigError(
+                    f"action {a.name!r}: {n} pixel_ops frames outside "
+                    f"[{f.min_frames}, {f.max_frames}]"
+                )
     if f.palette not in ("source", "none"):
         raise ConfigError(f"unknown finalize.palette {f.palette!r}")
