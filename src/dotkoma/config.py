@@ -7,6 +7,7 @@ everything that affects post-processing is folded into ``postprocess_id``.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -55,6 +56,17 @@ class ActionConfig:
 
 
 @dataclass(frozen=True)
+class LoraConfig:
+    """A LoRA merged into the video model before generation (e.g. step distillation)."""
+
+    repo: str
+    file: str
+    revision: str  # pinned commit: the LoRA is part of job_id
+    target: str = "transformer"  # "transformer" | "transformer_2" (Wan2.2 A14B low-noise expert)
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
 class GenerationConfig:
     backend: str  # "diffusers" | "fake"
     model_id: str = ""
@@ -65,12 +77,17 @@ class GenerationConfig:
     fps: int = 24
     steps: int = 40
     guidance: float = 5.0
+    guidance_2: float | None = None  # Wan2.2 A14B low-noise stage; None = pipeline default
     negative_prompt: str = ""
     seed: int | None = None  # fixed seed; None derives one per (row_id, action)
     offload: bool = True
     # Tiled VAE decoding changes the decoded pixels slightly. Tiled is the baseline
     # (every pilot video was decoded tiled); full decoding adds "vae_decode" to job_id.
     vae_tiling: bool = True
+    loras: tuple[LoraConfig, ...] = ()
+    # "none" | "fp8_storage": keep transformer weights in float8, compute in bf16.
+    # Changes the output slightly, so it is part of job_id.
+    quantization: str = "none"
     # raw video encoding; yuv444p avoids chroma blur at sprite edges
     pix_fmt: str = "yuv444p"
     crf: int = 10
@@ -159,6 +176,12 @@ def _action(name: str, spec: dict) -> ActionConfig:
     return ActionConfig(name=name, prompts=prompts, **spec)
 
 
+def _generation(spec: dict) -> GenerationConfig:
+    spec = dict(spec)
+    spec["loras"] = tuple(LoraConfig(**lora) for lora in spec.get("loras", []))
+    return GenerationConfig(**spec)
+
+
 def _variants(v: Any) -> str | tuple[int, ...]:
     if v == "all":
         return "all"
@@ -204,7 +227,7 @@ def load_config(path: str | Path, work_dir: str | Path | None = None) -> Config:
             source=source,
             sprites=sprites,
             actions=actions,
-            generation=GenerationConfig(**raw["generation"]),
+            generation=_generation(raw["generation"]),
             reference=ReferenceConfig(**ref),
             finalize=FinalizeConfig(**raw.get("finalize", {})),
             split=SplitConfig(**raw.get("split", {})),
@@ -237,6 +260,13 @@ def _validate(cfg: Config) -> None:
                     f"sprite {pick.subject!r}: action {a!r} has {n} prompts, no variant {bad}"
                 )
     g, r = cfg.generation, cfg.reference
+    if g.quantization not in ("none", "fp8_storage"):
+        raise ConfigError(f"unknown generation.quantization {g.quantization!r}")
+    for lora in g.loras:
+        if lora.target not in ("transformer", "transformer_2"):
+            raise ConfigError(f"lora {lora.file!r}: unknown target {lora.target!r}")
+        if not re.fullmatch(r"[0-9a-f]{40}", lora.revision):
+            raise ConfigError(f"lora {lora.file!r}: revision must be a pinned 40-char commit")
     if 16 * r.scale > min(g.width, g.height):
         raise ConfigError(f"16*scale={16 * r.scale} does not fit the {g.width}x{g.height} canvas")
     f = cfg.finalize

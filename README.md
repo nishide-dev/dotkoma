@@ -56,7 +56,10 @@ Results are written to `work/smoke/final/<job_id>/`.
 
 ## Generating with Wan2.2
 
-`configs/pilot.toml` pulls sprites from Pixel Art Atlas and targets `Wan-AI/Wan2.2-TI2V-5B-Diffusers`.
+Two configs pull sprites from Pixel Art Atlas:
+
+- `configs/pilot.toml` targets `Wan-AI/Wan2.2-TI2V-5B-Diffusers` (fits a 24 GB GPU).
+- `configs/pilot-a14b.toml` targets `Wan-AI/Wan2.2-I2V-A14B-Diffusers` with 4-step distillation LoRAs and fp8 weight storage. It runs on a 40 GB GPU and needs about 85 GB of CPU RAM while loading.
 
 ```sh
 uv run dotkoma prepare configs/pilot.toml
