@@ -247,3 +247,32 @@ def test_vae_decode_mode_is_part_of_job_id(smoke_cfg):
     full = read_jsonl(prepare(full_cfg))
     assert tiled.isdisjoint(j["job_id"] for j in full)
     assert all(j["model"]["vae_decode"] == "full" for j in full)
+
+
+def test_each_model_spec_gets_its_own_backend(smoke_cfg):
+    import dataclasses
+
+    run = smoke_cfg.run_dir
+    tiled = read_jsonl(prepare(smoke_cfg))
+    full_cfg = dataclasses.replace(
+        smoke_cfg, generation=dataclasses.replace(smoke_cfg.generation, vae_tiling=False)
+    )
+    full = read_jsonl(prepare(full_cfg))
+    from dotkoma.records import write_jsonl_atomic
+
+    write_jsonl_atomic(run / "jobs.jsonl", tiled + full)
+    seen = []
+
+    def factory(model, offload):
+        b = FakeBackend()
+        mode = model.get("vae_decode", "tiled")
+
+        def call(job, ref):
+            seen.append((job["model"].get("vae_decode", "tiled"), mode))
+            return b(job, ref)
+
+        call.info = b.info
+        return call
+
+    generate(run, backend_factory=factory)
+    assert len(seen) == 12 and all(job_mode == backend_mode for job_mode, backend_mode in seen)

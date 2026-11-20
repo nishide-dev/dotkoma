@@ -25,7 +25,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from .imaging import Layout, hex_to_rgb, load_rgba
-from .records import append_jsonl, latest_by_job, read_jsonl
+from .records import append_jsonl, canonical_json, latest_by_job, read_jsonl
 from .video import write_mp4
 
 log = logging.getLogger(__name__)
@@ -213,12 +213,12 @@ def generate(
         return counts
 
     results = run_dir / "results.jsonl"
-    groups: dict[tuple, list[dict]] = {}
-    for j in todo:
-        m = j["model"]
-        groups.setdefault((m["backend"], m["id"], m["revision"]), []).append(j)
+    groups: dict[str, list[dict]] = {}
+    for j in todo:  # one model load per distinct model spec (everything that is in job_id)
+        groups.setdefault(canonical_json(j["model"]), []).append(j)
 
-    for (_, model_id, _), jobs in groups.items():
+    for jobs in groups.values():
+        model_id = jobs[0]["model"]["id"]
         t0 = time.monotonic()
         backend = backend_factory(jobs[0]["model"], offload)
         load_s = round(time.monotonic() - t0, 2)
