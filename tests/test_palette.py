@@ -65,9 +65,21 @@ def test_loop_palette_modes():
 def test_one_off_colour_is_not_pulled_onto_an_added_colour():
     base, added = np.array([DARK], np.uint8), np.array([[250, 250, 250]], np.uint8)
     f = _frame({(6, 6): (252, 250, 249), (8, 8): (180, 180, 120)})  # eye, and a flash
-    out = snap_to_palette(f, base, added, 40)
+    out = snap_to_palette(f, base, added, 40, novelty=80)
     assert tuple(out[6, 6, :3]) == (250, 250, 250)  # within the group radius: kept
     assert tuple(out[8, 8, :3]) == DARK  # nearest is white, but outside its radius
+
+
+def test_colour_close_to_the_source_stays_with_the_source():
+    # (70, 0, 0) is within 80 of the source black, so it could never join the group of
+    # the added (100, 0, 0), even though it is only 30 away from it
+    base, added = np.array([[0, 0, 0]], np.uint8), np.array([[100, 0, 0]], np.uint8)
+    f = np.zeros((16, 16, 4), np.uint8)
+    f[2, 2] = (70, 0, 0, 255)
+    f[3, 3] = (95, 0, 0, 255)
+    out = snap_to_palette(f, base, added, 40, novelty=80)
+    assert tuple(out[2, 2, :3]) == (0, 0, 0)
+    assert tuple(out[3, 3, :3]) == (100, 0, 0)
 
 
 def test_preview_survives_more_than_255_colours(tmp_path):
@@ -87,6 +99,9 @@ def test_preview_survives_more_than_255_colours(tmp_path):
         "new_color_min_frame_share = 2.0",
         "new_color_min_pixels = 0",
         "new_color_min_pixels = 1.5",
+        "new_color_distance = true",
+        "new_color_min_frame_share = true",
+        "new_color_min_pixels = true",
     ],
 )
 def test_bad_new_colour_settings_are_rejected(smoke_cfg, line):

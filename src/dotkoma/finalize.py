@@ -205,8 +205,9 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
 
     # one palette for the whole loop, decided after seeing every frame
     palette, added = loop_palette(frames, source, cfg)
-    radius = cfg.new_color_distance / 2  # the grouping radius of stable_new_colors
-    frames = [snap_to_palette(f, palette, added, radius) for f in frames]
+    # the same membership rule stable_new_colors grouped with
+    d = cfg.new_color_distance
+    frames = [snap_to_palette(f, palette, added, d / 2, novelty=d) for f in frames]
 
     checks = run_checks(frames, source, edge, border, cfg)
     checks["background_drift"] = round(drift, 1)

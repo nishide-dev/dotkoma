@@ -159,13 +159,15 @@ def snap_to_palette(
     palette: np.ndarray,
     added: np.ndarray | None = None,
     added_radius: float = 0.0,
+    novelty: float = 0.0,
 ) -> np.ndarray:
     """Map opaque pixels to the nearest colour of a fixed (global) palette.
 
-    ``added`` colours (see ``stable_new_colors``) only capture pixels within
-    ``added_radius`` of them, the radius their group was formed with; anything else
-    goes to the nearest ``palette`` colour, so a one-off colour is not pulled onto
-    an added one just because it happens to be the closest.
+    ``added`` colours (see ``stable_new_colors``) only capture pixels that could
+    have joined their group: farther than ``novelty`` from every ``palette`` colour
+    and within ``added_radius`` of the added colour. Anything else goes to the
+    nearest ``palette`` colour, so a one-off colour is not pulled onto an added one
+    just because it happens to be the closest.
     """
     added = np.zeros((0, 3), np.uint8) if added is None else added
     if len(palette) == 0 and len(added) == 0:
@@ -180,7 +182,7 @@ def snap_to_palette(
         snapped, d_base = px.round().astype(np.uint8), np.full(len(px), np.inf)
     if len(added):
         d = np.linalg.norm(px[:, None, :] - added[None, :, :].astype(np.float32), axis=-1)
-        take = (d.min(axis=1) <= added_radius) & (d.min(axis=1) < d_base)
+        take = (d_base > novelty) & (d.min(axis=1) <= added_radius)
         snapped[take] = added[np.argmin(d, axis=1)][take]
     out[..., :3][opaque] = snapped
     return out
