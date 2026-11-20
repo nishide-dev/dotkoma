@@ -6,7 +6,7 @@
 
 | ファイル | 書き手 | 内容 |
 |---|---|---|
-| `jobs.jsonl` | prepare | `job_id`、元データ（repo・revision・row_id・subject・caption）、`split`、`requested_action`、プロンプト、シード、モデル・推論設定、参照レイアウト、キー色 |
+| `jobs.jsonl` | prepare | `job_id`、元データ（repo・revision・row_id・subject・caption）、`split`、`requested_action`、`generation_method`、プロンプト、シード、モデル・推論設定、参照レイアウト、キー色（`pixel_ops` ジョブはプロンプト・モデル・参照の代わりに `pixel_ops`） |
 | `inputs/<row_id>.png` / `_ref_<key>.png` | prepare | 元の 16×16 RGBA と、単色背景に整数倍拡大した参照画像 |
 | `results.jsonl` | generate | 追記専用。ジョブごとの `ok`/`failed`、実モデルIDとリビジョン、ランタイム、所要時間、失敗理由 |
 | `raw/<job_id>.mp4` | generate | 一時ファイルに書いてから rename。存在 + 最後の記録が `ok` で完了扱い |
@@ -18,6 +18,9 @@
 - `job_id` は生成に効く入力すべてのハッシュ。同じ入力なら同じID、条件を変えれば別ID。
 - `generate` を再実行すると未完了のジョブだけ処理する。失敗ジョブは `--retry-failed` で再試行。
 - 動作ごとに言い換えプロンプトを `prompts = [...]` で複数持てる。スプライト側の `prompt_variants`（`"all"` または `[0, 2]` など、既定は `[0]`）で実行する版を選ぶ。同じ動作の版はシードを共有するので、`prompt_variant` 別の採用率で言い回しの効果だけを比べられる。
+- `generation_method = "pixel_ops"` の動作（`pixel_ops = { kind = "hop" | "bob" | "sway" | "custom", ... }`）は動画モデルを使わない。prepare は `pixel_ops`（展開済みのコマごとのずらし量 `offsets` と表示時間 `durations_ms`）を持つジョブを書き、generate はこれを飛ばし、finalize が元絵を整数ピクセルずらしてコマを作る。`results.jsonl` と `raw/` は作られない。`job_id` には展開後のずらし量と表示時間が入る（プリセット名ではない）。
+- `pixel_ops` の動作を含むスプライト指定では、prepare はその動きで 16×16 からはみ出さない元絵を優先して選ぶ。どの元絵も収まらなければ、その（題材, 動作）は警告を出してジョブを作らない。Atlas の元絵は枠いっぱいに描かれたものが多いので、動作ごとに `[[sprites]]` を分けると選べる元絵が増える。
+- `[generation]` は `pixel_ops` の動作だけの設定では省略できる（backend `none`）。
 - `finalize` は元動画を読み直すだけなので、後処理設定やコマ選択を変えて何度でもやり直せる。
 
 ## 品質チェック（`sample.json` の `checks`）

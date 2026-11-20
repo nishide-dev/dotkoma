@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .config import Config
 from .imaging import Layout, choose_key_color, make_reference, save_png
+from .pixel_ops import expand as expand_pixel_ops
+from .pixel_ops import fits
 from .records import derive_seed, job_id, stable_hash, write_json_atomic, write_jsonl_atomic
 from .source import Sprite, load_sprites, source_ref
 
@@ -39,6 +41,18 @@ def pick_distinct(candidates: list[Sprite], count: int, min_distance: float = 0.
         if all(_shape_distance(c, p) >= min_distance for p in chosen):
             chosen.append(c)
     return chosen
+
+
+def _prefer_room(pool: list[Sprite], actions) -> list[Sprite]:
+    """Put sprites with room for every pixel_ops motion first (stable, so deterministic).
+
+    Most Atlas sprites fill the 16x16 grid, and a translation would cut them off.
+    Picks without pixel_ops actions keep the source order unchanged.
+    """
+    moves = [expand_pixel_ops(a.pixel_ops)["offsets"] for a in actions if a.pixel_ops]
+    if not moves:
+        return pool
+    return sorted(pool, key=lambda sp: sum(not fits(sp.rgba, m) for m in moves))
 
 
 def model_spec(g) -> dict:
@@ -92,6 +106,8 @@ def prepare(cfg: Config) -> Path:
             pool = [s for s in pool if s.row_id == pick.row_id]
             if not pool:
                 raise SystemExit(f"row_id {pick.row_id} ({pick.subject}) not found")
+        else:
+            pool = _prefer_room(pool, [cfg.actions[a] for a in pick.actions])
         sprites = pick_distinct(pool, pick.count)
         if len(sprites) < pick.count:
             log.warning(
@@ -104,7 +120,8 @@ def prepare(cfg: Config) -> Path:
             src_png = inputs / f"{stem}.png"
             ref_png = inputs / f"{stem}_ref_{key.lstrip('#')}.png"
             save_png(src_png, sp.rgba)
-            save_png(ref_png, make_reference(sp.rgba, layout, key))
+            if any(cfg.actions[a].generation_method == "video_model" for a in pick.actions):
+                save_png(ref_png, make_reference(sp.rgba, layout, key))
 
             for action_name, variant in (
                 (a, v)
@@ -112,6 +129,12 @@ def prepare(cfg: Config) -> Path:
                 for v in cfg.actions[a].variant_indices(pick.prompt_variants)
             ):
                 action = cfg.actions[action_name]
+                if action.generation_method == "pixel_ops":
+                    job = _pixel_ops_job(cfg, sp, action, src, src_png, run)
+                    if job and job["job_id"] not in seen:
+                        seen.add(job["job_id"])
+                        jobs.append(job)
+                    continue
                 prompt = build_prompt(action.prompts[variant], sp)
                 # same seed for every wording, so variants differ only in the prompt
                 seed = g.seed if g.seed is not None else derive_seed(src, sp.row_id, action_name)
@@ -165,13 +188,51 @@ def prepare(cfg: Config) -> Path:
                     }
                 )
 
-    jobs.sort(key=lambda j: (j["source"]["row_id"], j["requested_action"], j["prompt_variant"]))
+    jobs.sort(
+        key=lambda j: (j["source"]["row_id"], j["requested_action"], j["prompt_variant"] or 0)
+    )
     jobs_path = run / "jobs.jsonl"
     write_jsonl_atomic(jobs_path, jobs)
     write_json_atomic(run / "config.snapshot.json", cfg.to_dict())
     log.info("wrote %d jobs to %s", len(jobs), jobs_path)
     _report_coverage(jobs)
     return jobs_path
+
+
+def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, run: Path):
+    """A job made by translating the sprite: no prompt, model or reference image."""
+    ops = expand_pixel_ops(action.pixel_ops)
+    if not fits(sp.rgba, ops["offsets"]):
+        # moving it would push pixels off the 16x16 grid: no valid sample to make
+        log.warning(
+            "%s row %d: no room for %s (%s); skipped",
+            sp.subject,
+            sp.row_id,
+            action.name,
+            ops["offsets"],
+        )
+        return None
+    jid = job_id(
+        {
+            "source": {**src, "row_id": sp.row_id},
+            "action": action.name,
+            "generation_method": "pixel_ops",
+            "pixel_ops": ops,
+        }
+    )
+    return {
+        "job_id": jid,
+        "config_version": cfg.version,
+        "source": {**src, "row_id": sp.row_id, "subject": sp.subject, "caption": sp.caption},
+        "split": assign_split(sp.subject, cfg),
+        "requested_action": action.name,
+        "motion": action.motion,
+        "generation_method": "pixel_ops",
+        "prompt_method": None,
+        "prompt_variant": None,
+        "pixel_ops": ops,
+        "input_png": src_png.relative_to(run).as_posix(),
+    }
 
 
 def _report_coverage(jobs: list[dict]) -> None:
