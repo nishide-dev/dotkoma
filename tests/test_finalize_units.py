@@ -54,3 +54,27 @@ def test_identity_drift_ignores_translation_but_not_redrawing():
     assert identity_drift(other, src, 4) > 0.9
     flags = run_checks([src, other, src, src], src, 0, 0, FinalizeConfig())["flags"]
     assert "identity_drift" in flags
+
+
+@pytest.mark.parametrize("edge", ["top", "bottom", "left", "right"])
+def test_identity_drift_counts_pixels_cut_at_the_grid_edge(edge):
+    from dotkoma.finalize import identity_drift
+
+    src = np.zeros((16, 16, 4), np.uint8)
+    sl = {
+        "top": (slice(0, 4), slice(6, 10)),
+        "bottom": (slice(12, 16), slice(6, 10)),
+        "left": (slice(6, 10), slice(0, 4)),
+        "right": (slice(6, 10), slice(12, 16)),
+    }[edge]
+    src[sl] = (200, 50, 50, 255)
+    assert identity_drift(src, src, 4) == 0.0
+    cut = src.copy()
+    row_or_col = {
+        "top": (0, slice(None)),
+        "bottom": (15, slice(None)),
+        "left": (slice(None), 0),
+        "right": (slice(None), 15),
+    }[edge]
+    cut[row_or_col] = 0  # the outermost row/column is missing
+    assert identity_drift(cut, src, 4) == pytest.approx(4 / 16)

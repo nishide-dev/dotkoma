@@ -232,6 +232,7 @@ def generate(
                 "encode": {"pix_fmt": pix_fmt, "crf": crf},
             }
             t1 = time.monotonic()
+            failed = False
             try:
                 ref = load_rgba(run_dir / j["reference_png"])[..., :3]
                 frames = backend(j, ref)
@@ -256,9 +257,11 @@ def generate(
                 )
                 counts["failed"] += 1
                 log.error("job %s failed: %s", jid, rec["error"])
-                release = getattr(backend, "release_memory", None)
-                if release:
-                    release()
+                failed = True
+            # Outside the handler: the exception and its traceback (which pin the failed
+            # inference's GPU tensors) are gone by now, so the memory can actually be freed.
+            if failed and (release := getattr(backend, "release_memory", None)):
+                release()
             rec["generate_seconds"] = round(time.monotonic() - t1, 2)
             rec["finished_at"] = _now()
             append_jsonl(results, rec)

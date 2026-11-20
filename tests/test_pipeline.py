@@ -196,9 +196,42 @@ def test_background_drift_after_first_frame_is_keyed_out(smoke_cfg):
         return call
 
     generate(run, backend_factory=drifting)
+
+    def drift(index):
+        jid = _by_action(index, "ghost", "bob")["job_id"]
+        return json.loads((run / "final" / jid / "sample.json").read_text())["checks"][
+            "background_drift"
+        ]
+
     per_frame = finalize(run, smoke_cfg.finalize)
     assert "background_unstable" not in _by_action(per_frame, "ghost", "bob")["flags"]
+    assert drift(per_frame) > 60
 
     first_only = dataclasses.replace(smoke_cfg.finalize, background="first_frame")
     stale = finalize(run, first_only)
     assert "background_unstable" in _by_action(stale, "ghost", "bob")["flags"]
+    assert drift(stale) > 60  # drift is measured even when keying uses frame 0
+
+
+def test_memory_is_released_after_leaving_the_exception_handler(smoke_cfg):
+    import sys
+
+    run = smoke_cfg.run_dir
+    prepare(smoke_cfg)
+    fake = FakeBackend()
+    released = []
+
+    class Flaky:
+        info = fake.info
+
+        def __call__(self, job, ref):
+            if job["requested_action"] == "hop":
+                raise RuntimeError("CUDA out of memory")
+            return fake(job, ref)
+
+        def release_memory(self):
+            released.append(sys.exc_info()[0])  # None once the handler has exited
+
+    counts = generate(run, backend_factory=lambda m, o: Flaky())
+    assert counts == {"ok": 5, "failed": 1, "pending": 0}
+    assert released == [None]

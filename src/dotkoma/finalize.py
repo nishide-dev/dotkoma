@@ -110,9 +110,16 @@ def identity_drift(frame: np.ndarray, source: np.ndarray, max_shift: int) -> flo
     Translation (hop, bob) is free; redrawing the sprite is not. In the pilot,
     frames that kept the sprite scored <= 0.23 and redrawn / transformed ones >= 0.35.
     """
-    n = max(1, int((source[..., 3] > 0).sum()))
+    opaque = int((source[..., 3] > 0).sum())
     r = range(-max_shift, max_shift + 1)
-    return min(frame_diff(frame, _shift(source, dy, dx)) for dy in r for dx in r) / n
+    best = opaque
+    for dy in r:
+        for dx in r:
+            shifted = _shift(source, dy, dx)
+            # source pixels pushed off the 16x16 grid are missing from the frame: count them
+            lost = opaque - int((shifted[..., 3] > 0).sum())
+            best = min(best, frame_diff(frame, shifted) + lost)
+    return best / max(1, opaque)
 
 
 def run_checks(
@@ -179,9 +186,11 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
     # slightly, so "per_frame" re-measures it on each frame's border (same rule, own value).
     bg0 = measure_background(video[0])
 
-    frames, backgrounds, edge, border = [], [], 0.0, 0.0
+    frames, backgrounds, drift, edge, border = [], [], 0.0, 0.0, 0.0
     for i in idx:
-        bg = measure_background(video[i]) if cfg.background == "per_frame" else bg0
+        measured = measure_background(video[i])  # always measured, so drift is real
+        drift = max(drift, float(np.linalg.norm(measured - bg0)))
+        bg = measured if cfg.background == "per_frame" else bg0
         backgrounds.append([round(float(c), 1) for c in bg])
         mask = foreground_mask(video[i], bg, cfg.bg_tolerance)
         f = reduce_frame(video[i], mask, box, cfg.coverage_threshold)
@@ -190,9 +199,7 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
         border = max(border, border_foreground_fraction(mask))
 
     checks = run_checks(frames, source, edge, border, cfg)
-    checks["background_drift"] = round(
-        max(float(np.linalg.norm(np.array(b) - bg0)) for b in backgrounds), 1
-    )
+    checks["background_drift"] = round(drift, 1)
     pp_id = stable_hash({"finalize": cfg.__dict__, "selection": sel or {}}, 12)
 
     out = run_dir / "final" / jid
