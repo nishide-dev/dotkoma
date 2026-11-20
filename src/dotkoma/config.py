@@ -92,6 +92,7 @@ class FinalizeConfig:
     min_frames: int = 4
     max_frames: int = 8
     bg_tolerance: float = 60.0  # RGB distance to the measured background colour
+    background: str = "per_frame"  # "per_frame" | "first_frame": where the key colour is measured
     coverage_threshold: float = 0.5  # foreground share of a cell to become opaque
     palette: str = "source"  # "source": snap colours to the sprite's palette, "none"
     preview_scale: int = 8
@@ -236,5 +237,7 @@ def _validate(cfg: Config) -> None:
     f = cfg.finalize
     if not (f.min_frames <= f.num_frames <= f.max_frames):
         raise ConfigError("finalize.num_frames must lie in [min_frames, max_frames]")
+    if f.background not in ("per_frame", "first_frame"):
+        raise ConfigError(f"unknown finalize.background {f.background!r}")
     if f.palette not in ("source", "none"):
         raise ConfigError(f"unknown finalize.palette {f.palette!r}")

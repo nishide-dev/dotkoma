@@ -170,3 +170,35 @@ def test_prompt_variants_become_separate_jobs_with_shared_seed(smoke_cfg):
     assert len({j["seed"] for j in hops}) == 1
     assert all(j["prompt_method"] == "template" for j in jobs)
     assert len(jobs) == 7
+
+
+def test_background_drift_after_first_frame_is_keyed_out(smoke_cfg):
+    """Wan reproduces frame 0 exactly, then shifts the key colour slightly."""
+    import dataclasses
+
+    from dotkoma.generate import FakeBackend
+    from dotkoma.imaging import hex_to_rgb
+
+    run = smoke_cfg.run_dir
+    prepare(smoke_cfg)
+    fake = FakeBackend()
+
+    def drifting(model, offload):
+        def call(job, ref):
+            frames = fake(job, ref).astype(np.int16)
+            key = np.array(hex_to_rgb(job["key_color"]), np.int16)
+            bgmask = (frames == key).all(axis=-1)
+            shifted = np.clip(key + np.array([90, -90, 90]), 0, 255)  # > bg_tolerance away
+            frames[1:][bgmask[1:]] = shifted
+            return frames.astype(np.uint8)
+
+        call.info = fake.info
+        return call
+
+    generate(run, backend_factory=drifting)
+    per_frame = finalize(run, smoke_cfg.finalize)
+    assert "background_unstable" not in _by_action(per_frame, "ghost", "bob")["flags"]
+
+    first_only = dataclasses.replace(smoke_cfg.finalize, background="first_frame")
+    stale = finalize(run, first_only)
+    assert "background_unstable" in _by_action(stale, "ghost", "bob")["flags"]

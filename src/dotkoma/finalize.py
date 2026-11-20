@@ -152,11 +152,15 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
     source = load_rgba(run_dir / job["input_png"])
 
     idx, durations = select_frames(len(video), fps, sel, cfg.num_frames)
-    bg = measure_background(video[0])  # one background colour for the whole clip
     palette = opaque_colors(source) if cfg.palette == "source" else np.zeros((0, 3), np.uint8)
+    # Wan reproduces frame 0 from the reference and then drifts the flat key colour
+    # slightly, so "per_frame" re-measures it on each frame's border (same rule, own value).
+    bg0 = measure_background(video[0])
 
-    frames, edge, border = [], 0.0, 0.0
+    frames, backgrounds, edge, border = [], [], 0.0, 0.0
     for i in idx:
+        bg = measure_background(video[i]) if cfg.background == "per_frame" else bg0
+        backgrounds.append([round(float(c), 1) for c in bg])
         mask = foreground_mask(video[i], bg, cfg.bg_tolerance)
         f = reduce_frame(video[i], mask, box, cfg.coverage_threshold)
         frames.append(snap_to_palette(f, palette))
@@ -164,6 +168,9 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
         border = max(border, border_foreground_fraction(mask))
 
     checks = run_checks(frames, source, edge, border, cfg)
+    checks["background_drift"] = round(
+        max(float(np.linalg.norm(np.array(b) - bg0)) for b in backgrounds), 1
+    )
     pp_id = stable_hash({"finalize": cfg.__dict__, "selection": sel or {}}, 12)
 
     out = run_dir / "final" / jid
@@ -188,7 +195,7 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
         "loop": True,
         "source_frame_indices": idx,
         "source_fps": fps,
-        "background_rgb": [round(float(c), 1) for c in bg],
+        "background_rgb": backgrounds,
         "checks": checks,
     }
     write_json_atomic(tmp / "sample.json", sample)  # written last: marks completeness
