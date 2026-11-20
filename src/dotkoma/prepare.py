@@ -92,6 +92,10 @@ def model_spec(g) -> dict:
         spec["quantization"] = g.quantization
     if not g.vae_tiling:
         spec["vae_decode"] = "full"
+    if g.offload == "resident":
+        # encodes prompts in a separate pass and keeps everything on the GPU: outputs
+        # differ slightly from offloaded runs (speed-01), so it is its own job
+        spec["placement"] = "resident"
     return spec
 
 

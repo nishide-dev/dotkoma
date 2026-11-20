@@ -127,3 +127,186 @@ def test_defaults_keep_the_model_spec_unchanged(smoke_cfg):
     for j in read_jsonl(prepare(smoke_cfg)):
         assert set(j["model"]) == {"backend", "id", "revision"}
         assert "guidance_2" not in j["inference"]
+
+
+def test_offload_modes():
+    import pytest
+
+    from dotkoma.generate import offload_mode
+
+    assert offload_mode(True) == offload_mode("model") == "model"
+    assert offload_mode(False) == offload_mode("none") == "none"
+    assert offload_mode("resident") == "resident"
+    with pytest.raises(ValueError):
+        offload_mode("sometimes")
+
+
+def test_offload_is_validated(smoke_cfg):
+    import pytest
+
+    from dotkoma.config import ConfigError, load_config
+
+    path = smoke_cfg.config_path
+    text = path.read_text()
+    path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "resident"'))
+    assert load_config(path).generation.offload == "resident"
+    path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "maybe"'))
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+class _Mod:
+    def __init__(self):
+        self.device = "cpu"
+
+    def to(self, device):
+        self.device = device
+        return self
+
+
+class _FakeTorch:
+    class cuda:  # noqa: N801
+        @staticmethod
+        def empty_cache():
+            pass
+
+    @staticmethod
+    def device(name):
+        return name
+
+    @staticmethod
+    def inference_mode():
+        import contextlib
+
+        return contextlib.nullcontext()
+
+
+class _FakeWanPipe:
+    def __init__(self):
+        self.text_encoder, self.transformer, self.transformer_2, self.vae = (
+            _Mod(),
+            _Mod(),
+            _Mod(),
+            _Mod(),
+        )
+        self.encoded = []
+
+    def __call__(self, image=None, prompt=None, max_sequence_length=512):
+        pass
+
+    def encode_prompt(self, prompt, negative_prompt, do_classifier_free_guidance, **kw):
+        assert self.text_encoder.device == "cuda"  # one encoding path: on the GPU
+        assert self.transformer.device == "cpu"  # before the experts move in
+        self.encoded.append((prompt, kw["max_sequence_length"], kw["device"]))
+
+        class T:
+            def cpu(self):
+                return self
+
+        return T(), T()
+
+
+def _resident_backend():
+    from dotkoma.generate import DiffusersWanBackend
+
+    b = DiffusersWanBackend.__new__(DiffusersWanBackend)
+    b.pipe, b.torch, b.mode, b.resident, b.prompt_cache, b.info = (
+        _FakeWanPipe(),
+        _FakeTorch(),
+        "resident",
+        False,
+        {},
+        {},
+    )
+    return b
+
+
+def test_resident_prepare_encodes_once_with_the_pipeline_length(monkeypatch):
+    import pytest
+
+    import dotkoma.generate as gen
+
+    monkeypatch.setattr(gen, "_trim", lambda emb, torch: emb)  # covered separately below
+    monkeypatch.setattr(gen, "_nbytes", lambda emb: 1)
+    b = _resident_backend()
+    pipe = b.pipe
+    jobs = [{"prompt": p, "negative_prompt": ""} for p in ("a", "b", "a")]
+    b.prepare(jobs)
+    assert pipe.encoded == [("a", 512, "cuda"), ("b", 512, "cuda")]
+    assert b.resident and pipe.text_encoder is None
+    assert pipe.transformer.device == pipe.transformer_2.device == pipe.vae.device == "cuda"
+    b.prepare(jobs[:1])  # known prompts: fine
+    with pytest.raises(RuntimeError, match="after the experts became resident"):
+        b.prepare([{"prompt": "new", "negative_prompt": ""}])
+    monkeypatch.setattr(gen, "_nbytes", lambda emb: 3 * 2**30)  # each embedding: 3 GiB
+    with pytest.raises(RuntimeError, match="split the jobs"):
+        _resident_backend().prepare(jobs)  # 1 negative + 1 positive = 6 GiB > 4 GiB
+
+
+def test_resident_placement_is_part_of_job_id(smoke_cfg):
+    import pytest
+
+    from dotkoma.config import load_config
+    from dotkoma.generate import load_backend
+    from dotkoma.prepare import model_spec, prepare
+    from dotkoma.records import read_jsonl
+
+    before = {j["job_id"] for j in read_jsonl(prepare(smoke_cfg))}
+    path = smoke_cfg.config_path
+    text = path.read_text()
+    for value in ("true", "false", '"model"', '"none"'):  # runtime choices: same ids
+        path.write_text(text.replace('backend = "fake"', f'backend = "fake"\noffload = {value}'))
+        cfg = load_config(path, work_dir=smoke_cfg.work_dir)
+        assert {j["job_id"] for j in read_jsonl(prepare(cfg))} == before
+    path.write_text(text.replace('backend = "fake"', 'backend = "fake"\noffload = "resident"'))
+    cfg = load_config(path, work_dir=smoke_cfg.work_dir)
+    assert model_spec(cfg.generation)["placement"] == "resident"
+    assert {j["job_id"] for j in read_jsonl(prepare(cfg))}.isdisjoint(before)
+    with pytest.raises(ValueError, match="config"):
+        load_backend({"backend": "diffusers", "id": "x", "revision": "y"}, "resident")
+
+
+def test_trimmed_embeddings_restore_exactly():
+    import numpy as np
+
+    class T:  # the few torch ops _trim/_padded use, on numpy
+        def __init__(self, a):
+            self.a = a
+            self.shape = a.shape
+
+        def __getitem__(self, k):
+            return T(self.a[k])
+
+        def __ne__(self, v):
+            return T(self.a != v)
+
+        def any(self, dim):
+            return T(self.a.any(axis=dim))
+
+        def nonzero(self):
+            return T(np.nonzero(self.a)[0])
+
+        def __len__(self):
+            return len(self.a)
+
+        def __int__(self):
+            return int(self.a)
+
+        def clone(self):
+            return T(self.a.copy())
+
+        def new_zeros(self, *shape):
+            return T(np.zeros(shape, self.a.dtype))
+
+    class FakeTorch:
+        @staticmethod
+        def cat(xs, dim):
+            return T(np.concatenate([x.a for x in xs], axis=dim))
+
+    from dotkoma.generate import _padded, _trim
+
+    emb = np.zeros((1, 512, 8), np.float32)
+    emb[0, :37] = np.random.default_rng(0).normal(size=(37, 8))
+    trimmed = _trim(T(emb), FakeTorch)
+    assert trimmed.shape == (1, 37, 8)
+    np.testing.assert_array_equal(_padded(trimmed, 512, FakeTorch).a, emb)

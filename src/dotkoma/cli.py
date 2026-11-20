@@ -32,7 +32,7 @@ def cmd_generate(args) -> None:
         run_dir,
         limit=args.limit,
         retry_failed=args.retry_failed,
-        offload=g.offload,
+        offload="model" if g.offload == "resident" else g.offload,  # resident: from job
         pix_fmt=g.pix_fmt,
         crf=g.crf,
         sync_dir=args.sync_dir,

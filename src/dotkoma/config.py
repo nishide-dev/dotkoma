@@ -105,7 +105,10 @@ class GenerationConfig:
     guidance_2: float | None = None  # Wan2.2 A14B low-noise stage; None = pipeline default
     negative_prompt: str = ""
     seed: int | None = None  # fixed seed; None derives one per (row_id, action)
-    offload: bool = True
+    # true / "model": CPU offload per component; false / "none"; "resident": encode prompts
+    # first, then keep both experts and the VAE on the GPU (needs ~30 GB with fp8 storage).
+    # model / none are runtime choices; resident changes outputs slightly, so it is in job_id
+    offload: bool | str = True
     # Tiled VAE decoding changes the decoded pixels slightly. Tiled is the baseline
     # (every pilot video was decoded tiled); full decoding adds "vae_decode" to job_id.
     vae_tiling: bool = True
@@ -371,6 +374,8 @@ def _validate(cfg: Config) -> None:
                     f"sprite {pick.subject!r}: action {a!r} has {n} prompts, no variant {bad}"
                 )
     g, r = cfg.generation, cfg.reference
+    if g.offload not in (True, False, "model", "none", "resident"):
+        raise ConfigError(f"unknown generation.offload {g.offload!r}")
     if g.quantization not in ("none", "fp8_storage"):
         raise ConfigError(f"unknown generation.quantization {g.quantization!r}")
     for lora in g.loras:

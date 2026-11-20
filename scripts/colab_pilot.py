@@ -105,11 +105,17 @@ def record_env(run_dir: Path) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("run_dir", type=Path)
+    p.add_argument("run_dir", type=Path, nargs="+", help="several runs share one model load")
     p.add_argument("--limit", type=int)
     p.add_argument("--retry-failed", action="store_true")
     p.add_argument("--sync-dir", help="e.g. /content/drive/MyDrive/dotkoma/pilot")
     p.add_argument("--no-offload", action="store_true", help="keep the whole model on GPU")
+    p.add_argument(
+        "--offload",
+        choices=["model", "none"],
+        help="model (CPU offload, default) or none. Resident placement is set in the "
+        "config (generation.offload) because it is part of job_id",
+    )
     p.add_argument("--skip-install", action="store_true")
     p.add_argument("--stage", choices=["generate", "plan"], default="generate")
     a = p.parse_args()
@@ -120,23 +126,57 @@ def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / "src"))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    print(json.dumps(record_env(a.run_dir)), flush=True)
+    names = [r.name for r in a.run_dir]
+    if a.sync_dir and len(set(names)) != len(names):
+        # each run syncs to <sync-dir>/<name>; equal names would overwrite each other
+        sys.exit(f"run dirs need distinct names when syncing: {names}")
+    for run_dir in a.run_dir:
+        print(json.dumps(record_env(run_dir)), flush=True)
     if a.stage == "plan":
         from dotkoma.plan import plan
 
-        counts = plan(a.run_dir, limit=a.limit, retry_failed=a.retry_failed, sync_dir=a.sync_dir)
-        print(json.dumps(counts), flush=True)
+        many = len(a.run_dir) > 1
+        for run_dir in a.run_dir:
+            sync = (Path(a.sync_dir) / run_dir.name if many else a.sync_dir) if a.sync_dir else None
+            counts = plan(run_dir, limit=a.limit, retry_failed=a.retry_failed, sync_dir=sync)
+            print(run_dir, json.dumps(counts), flush=True)
         return
-    from dotkoma.generate import generate
+    from dotkoma.generate import generate, load_backend, pending_jobs
 
-    counts = generate(
-        a.run_dir,
-        limit=a.limit,
-        retry_failed=a.retry_failed,
-        offload=not a.no_offload,
-        sync_dir=a.sync_dir,
-    )
-    print(json.dumps(counts), flush=True)
+    offload = a.offload or ("none" if a.no_offload else "model")
+    # every pending job per model, across all runs: a resident backend encodes all
+    # their prompts up front, before the experts move onto the GPU
+    by_model: dict[str, list[dict]] = {}
+    for run_dir in a.run_dir:
+        todo = pending_jobs(run_dir, a.retry_failed)
+        for j in todo[: a.limit] if a.limit is not None else todo:
+            by_model.setdefault(json.dumps(j["model"], sort_keys=True), []).append(j)
+    loaded: dict[str, object] = {}
+
+    def shared(model: dict, offload: bool | str):
+        """Reuse one loaded model across runs with the same model spec."""
+        key = json.dumps(model, sort_keys=True)
+        if key not in loaded:
+            loaded.clear()  # a different model: let the previous one go first
+            backend = load_backend(model, offload)
+            if hasattr(backend, "prepare"):
+                backend.prepare(by_model.get(key, []))
+            loaded[key] = backend
+        return loaded[key]
+
+    many = len(a.run_dir) > 1
+    for run_dir in a.run_dir:
+        # one sync folder per run, so runs do not overwrite each other's records
+        sync = (Path(a.sync_dir) / run_dir.name if many else a.sync_dir) if a.sync_dir else None
+        counts = generate(
+            run_dir,
+            limit=a.limit,
+            retry_failed=a.retry_failed,
+            offload=offload,
+            sync_dir=sync,
+            backend_factory=shared,
+        )
+        print(run_dir, json.dumps(counts), flush=True)
 
 
 if __name__ == "__main__":
