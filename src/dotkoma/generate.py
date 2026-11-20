@@ -15,7 +15,6 @@ from __future__ import annotations
 import gc
 import logging
 import platform
-import shutil
 import sys
 import time
 import traceback
@@ -26,8 +25,9 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .imaging import Layout, hex_to_rgb, load_rgba
-from .records import append_jsonl, canonical_json, latest_by_job, read_jsonl
+from .imaging import Layout, hex_to_rgb, load_rgba, make_reference
+from .pixel_ops import sprite_digest
+from .records import append_jsonl, canonical_json, copy_atomic, latest_by_job, read_jsonl
 from .video import write_mp4
 
 log = logging.getLogger(__name__)
@@ -223,6 +223,20 @@ def load_backend(model: dict, offload: bool) -> Backend:
 # ---------------------------------------------------------------- runner
 
 
+def check_inputs(run_dir: Path, job: dict, ref: np.ndarray) -> None:
+    """For jobs that record ``sprite_sha256``: the uploaded sprite and reference must be
+    the ones this job_id was made for (e.g. not an older inputs/ next to a newer
+    jobs.jsonl). Raises, so the job is recorded as failed instead of a wrong video."""
+    if "sprite_sha256" not in job:
+        return
+    sprite = load_rgba(run_dir / job["input_png"])
+    if sprite_digest(sprite) != job["sprite_sha256"]:
+        raise ValueError(f"{job['input_png']} is not the sprite this job is for")
+    expected = make_reference(sprite, Layout.from_dict(job["layout"]), job["key_color"])
+    if not np.array_equal(expected, ref):
+        raise ValueError(f"{job['reference_png']} does not match {job['input_png']}")
+
+
 def raw_path(run_dir: Path, jid: str) -> Path:
     return run_dir / "raw" / f"{jid}.mp4"
 
@@ -294,13 +308,14 @@ def generate(
             failed = False
             try:
                 ref = load_rgba(run_dir / j["reference_png"])[..., :3]
+                check_inputs(run_dir, j, ref)
                 frames = backend(j, ref)
                 out = raw_path(run_dir, jid)
                 write_mp4(out, frames, fps=j["inference"]["fps"], pix_fmt=pix_fmt, crf=crf)
                 if sync_dir:
                     dst = Path(sync_dir) / "raw" / out.name
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(out, dst)
+                    copy_atomic(out, dst)
                 rec.update(
                     status="ok",
                     raw_path=out.relative_to(run_dir).as_posix(),
@@ -325,7 +340,7 @@ def generate(
             rec["finished_at"] = _now()
             append_jsonl(results, rec)
             if sync_dir:
-                shutil.copy2(results, Path(sync_dir) / "results.jsonl")
+                copy_atomic(results, Path(sync_dir) / "results.jsonl")
             counts["pending"] -= 1
         # Drop this model before the next group loads, so two pipelines never coexist.
         del backend

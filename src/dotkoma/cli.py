@@ -40,6 +40,14 @@ def cmd_generate(args) -> None:
     print(json.dumps(counts))
 
 
+def cmd_plan(args) -> None:
+    from .plan import plan
+
+    run_dir, _ = _run_dir(args)
+    counts = plan(run_dir, limit=args.limit, retry_failed=args.retry_failed, sync_dir=args.sync_dir)
+    print(json.dumps(counts))
+
+
 def cmd_finalize(args) -> None:
     from .finalize import finalize
 
@@ -64,6 +72,10 @@ def main(argv: list[str] | None = None) -> None:
         return sp
 
     add("prepare", cmd_prepare, "pick sprites, write reference PNGs and jobs.jsonl")
+    pl = add("plan", cmd_plan, "VLM writes per-sprite motion instructions (Colab GPU, or fake)")
+    pl.add_argument("--limit", type=int)
+    pl.add_argument("--retry-failed", action="store_true")
+    pl.add_argument("--sync-dir", help="copy plans.jsonl here after each answer (e.g. Drive)")
     g = add("generate", cmd_generate, "run pending jobs (Colab GPU, or the fake backend)")
     g.add_argument("--limit", type=int)
     g.add_argument("--retry-failed", action="store_true")

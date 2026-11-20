@@ -8,6 +8,8 @@
 |---|---|---|
 | `jobs.jsonl` | prepare | `job_id`、元データ（repo・revision・row_id・subject・caption）、`split`、`requested_action`、`generation_method`、プロンプト、シード、モデル・推論設定、参照レイアウト、キー色（`pixel_ops` ジョブはプロンプト・モデル・参照の代わりに `pixel_ops`） |
 | `inputs/<row_id>.png` / `_ref_<key>.png` | prepare | 元の 16×16 RGBA と、単色背景に整数倍拡大した参照画像 |
+| `plan_requests.jsonl` | prepare | `method = "vlm"` の動作について、計画を頼む（元絵, 動作）の一覧。`request_id`、元データ、動作の説明、VLM への指示文、計画モデルの設定 |
+| `plans.jsonl` | plan | 追記専用。`request_id` ごとの VLM の答え（`feasible`、`moving_part`、`reason`、`motion_text`、生の出力）。最後の `ok` の記録が有効 |
 | `results.jsonl` | generate | 追記専用。ジョブごとの `ok`/`failed`、実モデルIDとリビジョン、ランタイム、所要時間、失敗理由 |
 | `raw/<job_id>.mp4` | generate | 一時ファイルに書いてから rename。存在 + 最後の記録が `ok` で完了扱い |
 | `selections.jsonl` | 人 | 目視後のコマ選択の上書き `{"job_id", "start", "end"}` または `{"job_id", "indices"}` |
@@ -18,6 +20,7 @@
 - `job_id` は生成に効く入力すべてのハッシュ。同じ入力なら同じID、条件を変えれば別ID。
 - `generate` を再実行すると未完了のジョブだけ処理する。失敗ジョブは `--retry-failed` で再試行。
 - 動作ごとに言い換えプロンプトを `prompts = [...]` で複数持てる。スプライト側の `prompt_variants`（`"all"` または `[0, 2]` など、既定は `[0]`）で実行する版を選ぶ。同じ動作の版はシードを共有するので、`prompt_variant` 別の採用率で言い回しの効果だけを比べられる。
+- `method = "vlm"` の動作は、VLM（`[plan]`、既定 Qwen3.5-9B）が元絵を見て、その動作ができるか・どこが動くか・動画モデル向けの一文（`motion_text`）を答える。手順は `prepare`（`plan_requests.jsonl` を書く）→ `plan`（Colab GPU、`scripts/colab_pilot.py --stage plan`）→ もう一度 `prepare`（`feasible` な計画から、動作の `prompt_frame` の `{motion_text}` を埋めてジョブを作る）。`feasible = false` の組はジョブを作らない。`request_id` は元絵（画素のハッシュ `sprite_sha256` を含む）・動作・VLM に渡す実際の指示文（題材名・説明文を含む）・計画モデルの設定のハッシュ。計画の文面が変わればプロンプトが変わり、`job_id` も変わる。VLM のジョブの `job_id` には元絵の画素のハッシュも入る（定型文のジョブの `job_id` は従来どおり）。`plans.jsonl` は request_id ごとに最後の `ok` が有効で、後の失敗記録で消えない。`plan` は `plan_requests.jsonl` がなければエラーにし、読み込んだ元絵が依頼の `sprite_sha256` と違えばその依頼を失敗として記録する。`--sync-dir` では開始時と答えるたびに `plans.jsonl` を一時ファイル経由で写す（generate の同期も同じ方式）。VLM のジョブは `sprite_sha256` を記録し、generate は推論の前に元絵と参照画像が、finalize は後処理の前に元絵がそれに一致するかを確かめ、違えば失敗として記録する。ジョブと `sample.json` には `plan`（`request_id`、`moving_part`）が残る
 - `generation_method = "pixel_ops"` の動作（`pixel_ops = { kind = "hop" | "bob" | "sway" | "custom", ... }`）は動画モデルを使わない。prepare は `pixel_ops`（展開済みのコマごとのずらし量 `offsets` と表示時間 `durations_ms`）を持つジョブを書き、generate はこれを飛ばし、finalize が元絵を整数ピクセルずらしてコマを作る。`results.jsonl` と `raw/` は作られない。`job_id` には展開後のずらし量と表示時間が入る（プリセット名ではない）。
 - `pixel_ops` の動作は、動作ごとに別々に元絵を選ぶ。候補はその動きで 16×16 からはみ出さない元絵だけで、1 体もなければ警告を出してその（題材, 動作）のジョブを作らない。`row_id` 指定の元絵が収まらない場合も同様に飛ばす。動画の動作は従来どおりの順で選ぶ（既存の `job_id` は変わらない）。Atlas の元絵は枠いっぱいに描かれたものが多い。
 - `pixel_ops` ジョブの `job_id` には元絵の画素のハッシュ（`sprite_sha256`）も入り、ジョブにも記録する。ローカルの元絵を書き換えれば別ジョブになる。finalize は `input_png` の画素がこのハッシュと一致しなければそのジョブを `finalize_failed` にする（prepare の中断などで入力とジョブが食い違った場合）。

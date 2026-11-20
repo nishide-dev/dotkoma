@@ -55,10 +55,14 @@ class ActionConfig:
     # (see pixel_ops.py); takes no prompts and never reaches the generate stage.
     generation_method: str = "video_model"
     pixel_ops: dict[str, Any] | None = None
+    # method = "vlm": a VLM writes the motion per sprite (see plan.py). ``description``
+    # tells it what the motion is; ``prompt_frame`` wraps its answer as {motion_text}.
+    description: str = ""
+    prompt_frame: str = ""
 
     def variant_indices(self, selection: str | tuple[int, ...]) -> tuple[int, ...]:
-        if self.generation_method == "pixel_ops":
-            return (0,)  # no wording to vary
+        if self.generation_method == "pixel_ops" or self.method == "vlm":
+            return (0,)  # no fixed wording to vary
         if selection == "all":
             return tuple(range(len(self.prompts)))
         return tuple(selection)
@@ -73,6 +77,18 @@ class LoraConfig:
     revision: str  # pinned commit: the LoRA is part of job_id
     target: str = "transformer"  # "transformer" | "transformer_2" (Wan2.2 A14B low-noise expert)
     weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class PlanConfig:
+    """The VLM that writes per-sprite motion instructions (actions with method = "vlm")."""
+
+    backend: str = "qwen"  # "qwen" | "fake"
+    model_id: str = "Qwen/Qwen3.5-9B"
+    model_revision: str = ""  # pinned commit (the answers depend on it)
+    max_new_tokens: int = 300
+    image_scale: int = 16  # the 16x16 sprite is shown enlarged to 256x256
+    instruction: str = ""  # "" = plan.DEFAULT_INSTRUCTION
 
 
 @dataclass(frozen=True)
@@ -173,6 +189,7 @@ class Config:
     finalize: FinalizeConfig
     split: SplitConfig
     config_path: Path = field(default=Path("."))
+    plan: PlanConfig | None = None
 
     @property
     def run_dir(self) -> Path:
@@ -201,7 +218,19 @@ def _action(name: str, spec: dict) -> ActionConfig:
         spec["prompts"] = [spec.pop("prompt")]
     prompts = _tuple(spec.pop("prompts", None))
     method = spec.get("generation_method", "video_model")
-    if method == "video_model":
+    if method == "video_model" and spec.get("method") == "vlm":
+        if prompts:
+            raise ConfigError(f"action {name!r}: method = 'vlm' takes no prompts")
+        if not spec.get("description"):
+            raise ConfigError(f"action {name!r}: method = 'vlm' needs a description")
+        frame = spec.get("prompt_frame", "")
+        if "{motion_text}" not in frame:
+            raise ConfigError(f"action {name!r}: prompt_frame must contain {{motion_text}}")
+        try:
+            frame.format(subject="", caption="", motion_text="")
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConfigError(f"action {name!r}: prompt_frame: bad placeholder {e}") from e
+    elif method == "video_model":
         if not prompts:
             raise ConfigError(f"action {name!r}: needs at least one prompt")
         if "pixel_ops" in spec:
@@ -273,6 +302,7 @@ def load_config(path: str | Path, work_dir: str | Path | None = None) -> Config:
             finalize=FinalizeConfig(**raw.get("finalize", {})),
             split=SplitConfig(**raw.get("split", {})),
             config_path=path,
+            plan=PlanConfig(**raw["plan"]) if "plan" in raw else None,
         )
     except (KeyError, TypeError) as e:
         raise ConfigError(f"{path}: invalid config: {e}") from e
@@ -293,6 +323,28 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("source.revision must pin a dataset commit for atlas sources")
     if cfg.generation.backend not in ("diffusers", "fake", "none"):
         raise ConfigError(f"unknown generation.backend {cfg.generation.backend!r}")
+    vlm = sorted(
+        {
+            a
+            for p in cfg.sprites
+            for a in p.actions
+            if a in cfg.actions and cfg.actions[a].method == "vlm"
+        }
+    )
+    if vlm and cfg.plan is None:
+        raise ConfigError(f"actions {vlm} use method = 'vlm' and need a [plan] section")
+    if cfg.plan is not None:
+        if cfg.plan.backend not in ("qwen", "fake"):
+            raise ConfigError(f"unknown plan.backend {cfg.plan.backend!r}")
+        if cfg.plan.backend == "qwen" and not re.fullmatch(
+            r"[0-9a-f]{40}", cfg.plan.model_revision
+        ):
+            raise ConfigError("plan.model_revision must be a pinned 40-char commit")
+        if cfg.plan.instruction:
+            try:
+                cfg.plan.instruction.format(subject="", caption="", action="", description="")
+            except (KeyError, IndexError, ValueError) as e:
+                raise ConfigError(f"plan.instruction: bad placeholder {e}") from e
     if cfg.generation.backend == "none":
         video = sorted(
             {
@@ -308,8 +360,8 @@ def _validate(cfg: Config) -> None:
         for a in pick.actions:
             if a not in cfg.actions:
                 raise ConfigError(f"sprite {pick.subject!r} uses undefined action {a!r}")
-            if cfg.actions[a].generation_method == "pixel_ops":
-                continue
+            if cfg.actions[a].generation_method == "pixel_ops" or cfg.actions[a].method == "vlm":
+                continue  # no fixed prompts to pick variants from
             n = len(cfg.actions[a].prompts)
             bad = [
                 i for i in cfg.actions[a].variant_indices(pick.prompt_variants) if not 0 <= i < n

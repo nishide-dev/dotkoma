@@ -83,7 +83,7 @@ A run is described by a single TOML file:
 
 - **Source:** the dataset, its pinned revision, and which shards to read.
 - **Sprites:** which subjects to animate, and with which actions.
-- **Actions:** one or more prompt wordings per action. All wordings of an action share a seed, so their acceptance rates can be compared directly. Whole-sprite motions (hop, bob, sway) can instead be made by moving the sprite itself (`generation_method = "pixel_ops"`), which needs no GPU.
+- **Actions:** one or more prompt wordings per action. All wordings of an action share a seed, so their acceptance rates can be compared directly. Alternatively (`method = "vlm"`), a vision-language model (Qwen3.5) looks at each sprite, decides whether the action fits it, and writes the motion instruction. Whole-sprite motions (hop, bob, sway) can instead be made by moving the sprite itself (`generation_method = "pixel_ops"`), which needs no GPU.
 - **Generation:** model, resolution, frame count and inference settings. Optional when every action uses `pixel_ops`.
 - **Post-processing:** frames per loop, keying tolerance, palette handling and check thresholds.
 
