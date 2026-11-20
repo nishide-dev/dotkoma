@@ -179,3 +179,29 @@ def test_detail_lost_ignores_translation():
     assert lost_detail([src, *up], src, 4) == 0
     off = [translate(src, 0, -6)] * 3  # beyond max_shift: 2 rows can no longer be matched
     assert lost_detail([src, *off], src, 4) == 16
+
+
+def test_single_frame_loops_are_rejected(smoke_cfg):
+    from dotkoma.config import ConfigError, load_config
+
+    path = smoke_cfg.config_path
+    path.write_text(
+        path.read_text().replace(
+            "[finalize]\nnum_frames = 6", "[finalize]\nmin_frames = 1\nnum_frames = 1"
+        )
+    )
+    with pytest.raises(ConfigError, match="min_frames"):
+        load_config(path)
+    src = _block()
+    r = run_checks([src], src, 0, 0, FinalizeConfig())  # e.g. a one-index selection
+    assert "frame_count" in r["flags"] and r["auto_verdict"] == "reject"
+
+
+def test_repainting_is_not_detail_lost():
+    from dotkoma.finalize import lost_detail
+
+    src = _block()
+    src[6, 6:12] = (20, 20, 20, 255)  # a 6-px "eye"
+    closed = src.copy()
+    closed[6, 6:12] = (200, 80, 40, 255)  # painted over with the body colour
+    assert lost_detail([src, closed, closed, closed], src, 4) == 0  # identity_drift's job

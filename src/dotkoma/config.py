@@ -329,6 +329,8 @@ def _validate(cfg: Config) -> None:
     if 16 * r.scale > min(g.width, g.height):
         raise ConfigError(f"16*scale={16 * r.scale} does not fit the {g.width}x{g.height} canvas")
     f = cfg.finalize
+    if f.min_frames < 2:
+        raise ConfigError("finalize.min_frames must be >= 2 (a loop needs at least two frames)")
     if not (f.min_frames <= f.num_frames <= f.max_frames):
         raise ConfigError("finalize.num_frames must lie in [min_frames, max_frames]")
     if f.edge_cut_local_fraction is not None and f.edge_cut_local_fraction < f.edge_cut_fraction:

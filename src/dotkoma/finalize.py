@@ -136,6 +136,12 @@ def lost_detail(frames: list[np.ndarray], source: np.ndarray, max_shift: int) ->
     cookie on a mug) shows up as pixels absent from all later frames. Each frame is
     compared at the shift that keeps most of the source, so a hop or sway is not a
     loss; pixels a shift pushes off the grid count as missing.
+
+    Only vanishing (opaque -> transparent) counts, not repainting. Local motions
+    repaint on purpose and for good: a closed eye, a flame that leans. In pilot 03,
+    counting colour changes too gave usable clips up to 11 (owl blink, torch 6),
+    over the threshold that separates the vanished cookie (19) from them when only
+    transparency counts (usable <= 4). Repainting is left to identity_drift.
     """
     opaque = source[..., 3] > 0
     if len(frames) < 2 or not opaque.any():
