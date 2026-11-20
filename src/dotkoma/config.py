@@ -123,7 +123,12 @@ class FinalizeConfig:
     bg_tolerance: float = 60.0  # RGB distance to the measured background colour
     background: str = "per_frame"  # "per_frame" | "first_frame": where the key colour is measured
     coverage_threshold: float = 0.5  # foreground share of a cell to become opaque
-    palette: str = "source"  # "source": snap colours to the sprite's palette, "none"
+    # "source+stable": the sprite's palette plus new colours that recur across the loop
+    # (see imaging.stable_new_colors); "source": the sprite's palette only; "none"
+    palette: str = "source+stable"
+    new_color_distance: float = 80.0  # RGB distance from every source colour to count as new
+    new_color_min_frame_share: float = 0.5  # share of frames a new colour must appear in
+    new_color_min_pixels: int = 2  # pixels of it a frame needs for the colour to count there
     preview_scale: int = 8
     # soft-check thresholds
     loop_jump_factor: float = 2.5
@@ -316,5 +321,17 @@ def _validate(cfg: Config) -> None:
                     f"action {a.name!r}: {n} pixel_ops frames outside "
                     f"[{f.min_frames}, {f.max_frames}]"
                 )
-    if f.palette not in ("source", "none"):
+    if f.palette not in ("source+stable", "source", "none"):
         raise ConfigError(f"unknown finalize.palette {f.palette!r}")
+
+    def number(v) -> bool:
+        return isinstance(v, int | float) and not isinstance(v, bool)
+
+    if not (number(f.new_color_distance) and 0 < f.new_color_distance <= 442):
+        raise ConfigError("finalize.new_color_distance must be in (0, 442] (RGB distance)")
+    share = f.new_color_min_frame_share
+    if not (number(share) and 0 < share <= 1):
+        raise ConfigError("finalize.new_color_min_frame_share must be in (0, 1]")
+    px = f.new_color_min_pixels
+    if not (isinstance(px, int) and not isinstance(px, bool) and 1 <= px <= 256):
+        raise ConfigError("finalize.new_color_min_pixels must be an int in [1, 256]")
