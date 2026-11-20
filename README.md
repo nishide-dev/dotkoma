@@ -20,7 +20,7 @@ finalize  (CPU)  select loop frames, key out the background, -> 16×16 RGBA fram
 - The stages communicate only through files, so GPU work can run on a remote machine such as Colab while everything else runs locally.
 - Each job ID is a hash of the requested generation settings: source sprite, action, prompt, seed, model ID and revision, and inference and reference settings. Pin the model revision to a commit in the config so that the ID also identifies the weights. The revision actually loaded is recorded separately in `results.jsonl`.
 - Re-running `generate` processes only unfinished jobs. Failed jobs are skipped unless `--retry-failed` is passed.
-- Raw videos, job lists and finalized samples are written to a temporary file and then renamed, so an interrupted run never leaves partial output that looks complete. `results.jsonl` is an append-only log, and a line torn by a crash is discarded on the next run.
+- Raw videos, job lists and finalized samples are written to a temporary file and then renamed, so an interrupted run never leaves partial output that looks complete. `results.jsonl` is an append-only log. A record counts only once its line ends with a newline, so a final line cut short by a crash is ignored and removed on the next append.
 - `finalize` rebuilds samples from the raw videos. Post-processing can be changed and re-run without regenerating anything.
 - By default `finalize` takes evenly spaced frames over the whole clip. A frame window or explicit frame indices can be set per clip in `selections.jsonl`.
 - Every frame of a clip is reduced with the same grid and palette rules, so real motion such as a hop is preserved rather than re-centred away.

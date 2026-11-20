@@ -43,25 +43,31 @@ def job_id(generation_inputs: dict[str, Any]) -> str:
 # ---------------------------------------------------------------- jsonl io
 
 
-def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+def read_jsonl(path: str | Path, *, unterminated_tail: str = "drop") -> list[dict[str, Any]]:
+    """Read a JSON Lines file. A record is complete only when it ends with a newline.
+
+    ``unterminated_tail`` decides what happens to a final line without a newline:
+      "drop"   machine-written logs (append_jsonl): it is an interrupted append,
+               ignored here and cut off by the next append. Same rule on both sides.
+      "parse"  hand-edited files: editors often omit the final newline.
+    Any complete line that is not valid UTF-8 JSON is real corruption and raises.
+    """
     path = Path(path)
     if not path.exists():
         return []
+    *complete, tail = path.read_bytes().split(b"\n")
+    if tail.strip() and unterminated_tail == "parse":
+        complete.append(tail)
+    elif unterminated_tail not in ("drop", "parse"):
+        raise ValueError(f"unknown unterminated_tail {unterminated_tail!r}")
     out = []
-    with path.open(encoding="utf-8") as f:
-        for lineno, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                # a torn final line from a crash mid-append: ignore it, but only
-                # if it is the last line; anything else is real corruption.
-                rest = f.read().strip()
-                if rest:
-                    raise ValueError(f"{path}:{lineno}: corrupt jsonl line") from None
-                break
+    for lineno, raw in enumerate(complete, 1):
+        if not raw.strip():
+            continue
+        try:
+            out.append(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ValueError(f"{path}:{lineno}: corrupt jsonl line") from e
     return out
 
 
