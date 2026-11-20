@@ -104,6 +104,20 @@ class DiffusersWanBackend:
         pipe = WanImageToVideoPipeline.from_pretrained(
             model_id, vae=vae, torch_dtype=torch.bfloat16, revision=resolved
         )
+        timings = {}
+        t = time.monotonic()
+        loras = model.get("loras", [])
+        if loras:
+            _merge_loras(pipe, loras)
+        timings["lora_merge_seconds"] = round(time.monotonic() - t, 2)
+        if model.get("quantization") == "fp8_storage":
+            # after merging, so the float8 copies already include the LoRA deltas
+            for name in ("transformer", "transformer_2"):
+                module = getattr(pipe, name, None)
+                if module is not None:
+                    module.enable_layerwise_casting(
+                        storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16
+                    )
         if offload:
             pipe.enable_model_cpu_offload()
         else:
@@ -121,6 +135,9 @@ class DiffusersWanBackend:
             "model_revision": resolved,
             "offload": offload,
             "vae_tiling": vae_tiling,
+            "loras": loras,
+            "quantization": model.get("quantization", "none"),
+            **timings,
             **_torch_runtime(torch),
         }
 
@@ -144,11 +161,36 @@ class DiffusersWanBackend:
             width=inf["width"],
             num_frames=inf["num_frames"],
             guidance_scale=inf["guidance"],
+            **({"guidance_scale_2": inf["guidance_2"]} if "guidance_2" in inf else {}),
             num_inference_steps=inf["steps"],
             generator=gen,
             output_type="np",
         ).frames[0]
         return (np.clip(out, 0.0, 1.0) * 255).round().astype(np.uint8)
+
+
+def _merge_loras(pipe, loras: list[dict]) -> None:
+    """Load each LoRA into its expert, fuse it into the weights, then drop the adapters.
+
+    Fusing removes the per-step LoRA overhead and lets fp8 storage cast plain weights.
+    """
+    by_target: dict[str, list[tuple[str, float]]] = {}
+    for i, lora in enumerate(loras):
+        name = f"lora{i}"
+        extra = {"load_into_transformer_2": True} if lora["target"] == "transformer_2" else {}
+        pipe.load_lora_weights(
+            lora["repo"],
+            weight_name=lora["file"],
+            revision=lora["revision"],
+            adapter_name=name,
+            **extra,
+        )
+        by_target.setdefault(lora["target"], []).append((name, float(lora["weight"])))
+    for target, adapters in by_target.items():
+        names = [n for n, _ in adapters]
+        pipe.set_adapters(names, adapter_weights=[w for _, w in adapters])
+        pipe.fuse_lora(components=[target], adapter_names=names, lora_scale=1.0)
+    pipe.unload_lora_weights()
 
 
 def _torch_runtime(torch) -> dict[str, Any]:

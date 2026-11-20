@@ -41,6 +41,30 @@ def pick_distinct(candidates: list[Sprite], count: int, min_distance: float = 0.
     return chosen
 
 
+def model_spec(g) -> dict:
+    """Everything about the model that changes its output; part of job_id.
+
+    Optional parts are omitted when unused so existing job_ids stay valid.
+    """
+    spec = {"backend": g.backend, "id": g.model_id, "revision": g.model_revision}
+    if g.loras:
+        spec["loras"] = [
+            {
+                "repo": x.repo,
+                "file": x.file,
+                "revision": x.revision,
+                "target": x.target,
+                "weight": x.weight,
+            }
+            for x in g.loras
+        ]
+    if g.quantization != "none":
+        spec["quantization"] = g.quantization
+    if not g.vae_tiling:
+        spec["vae_decode"] = "full"
+    return spec
+
+
 def build_prompt(template: str, sprite: Sprite) -> str:
     return template.format(subject=sprite.subject, caption=sprite.caption)
 
@@ -97,12 +121,7 @@ def prepare(cfg: Config) -> Path:
                     "prompt": prompt,
                     "negative_prompt": g.negative_prompt,
                     "seed": seed,
-                    "model": {
-                        "backend": g.backend,
-                        "id": g.model_id,
-                        "revision": g.model_revision,
-                        **({} if g.vae_tiling else {"vae_decode": "full"}),
-                    },
+                    "model": model_spec(g),
                     "inference": {
                         "width": g.width,
                         "height": g.height,
@@ -110,6 +129,7 @@ def prepare(cfg: Config) -> Path:
                         "fps": g.fps,
                         "steps": g.steps,
                         "guidance": g.guidance,
+                        **({"guidance_2": g.guidance_2} if g.guidance_2 is not None else {}),
                     },
                     "reference": {"layout": layout.to_dict(), "key_color": key},
                 }

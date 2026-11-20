@@ -53,3 +53,20 @@ def test_variants_all_and_indices(tmp_path):
 def test_invalid_prompt_settings(tmp_path, action, pick):
     with pytest.raises(ConfigError):
         _load(tmp_path, action, pick)
+
+
+def test_loras_need_pinned_revision_and_known_target(tmp_path):
+    lora = (
+        '\n[[generation.loras]]\nrepo = "r"\nfile = "f.safetensors"\n'
+        'revision = "{rev}"\ntarget = "{t}"\n'
+    )
+    sha = "a" * 40
+    ok = BASE.format(action='prompt = "a"', pick="") + lora.format(rev=sha, t="transformer_2")
+    p = tmp_path / "ok.toml"
+    p.write_text(ok)
+    cfg = load_config(p)
+    assert cfg.generation.loras[0].target == "transformer_2"
+    for rev, t in (("main", "transformer"), (sha, "unet")):
+        p.write_text(BASE.format(action='prompt = "a"', pick="") + lora.format(rev=rev, t=t))
+        with pytest.raises(ConfigError):
+            load_config(p)

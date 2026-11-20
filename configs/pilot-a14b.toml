@@ -1,0 +1,93 @@
+# Pilot 02: same 12 jobs as pilot.toml, Wan2.2 I2V-A14B with 4-step Lightning LoRAs and fp8
+# weight storage (A100 / H100). Compare with work/pilot (TI2V-5B, 40 steps).
+version = "pilot-a14b-v1"
+
+[run]
+name = "pilot-a14b"
+work_dir = "work"
+
+[source]
+kind = "atlas"
+repo_id = "Angais/pixel-art-atlas-1.4m"
+revision = "bf78f8c8cbafa6d07718111a94d41e2dd79ddaa7"
+shards = ["data/train-000.parquet"]  # one 29 MB shard is enough for the pilot
+
+[[sprites]]
+subject = "cat"
+actions = ["blink", "hop"]
+
+[[sprites]]
+subject = "ghost"
+actions = ["blink", "bob"]
+
+[[sprites]]
+subject = "slime"
+actions = ["hop", "bob"]
+
+[[sprites]]
+subject = "toy robot"  # Atlas has few full characters; "knight" alone does not exist
+actions = ["wave", "hop"]
+
+[[sprites]]
+subject = "candle"
+actions = ["flicker", "hop"]
+
+[[sprites]]
+subject = "cup of coffee"
+actions = ["steam", "bob"]
+
+# {subject} and {caption} are filled from the Atlas row.
+# Each action may list alternative wordings as prompts = ["...", "..."]; a sprite runs
+# variant 0 unless it sets prompt_variants = "all" or e.g. [0, 2]. All variants of an
+# action share one seed, so acceptance rate per prompt_variant isolates the wording.
+[actions.blink]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} blinks its eyes once, everything else stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.hop]
+motion = "global"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} hops once in place and lands back in its original pose. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.bob]
+motion = "global"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} floats slowly up and down by a small amount. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.wave]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. The {subject} waves one hand, its body stays in place. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.flicker]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. Only the flame flickers gently, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.steam]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. Small wisps of steam rise from the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+
+[generation]
+backend = "diffusers"
+model_id = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+model_revision = "596658fd9ca6b7b71d5057529bbf319ecbc61d74"
+width = 832   # 480p, the A14B reference resolution
+height = 480
+num_frames = 49  # ~3 s at 16 fps; Wan needs 4k+1 frames
+fps = 16
+steps = 4        # step-distilled by the Lightning LoRAs below
+guidance = 1.0   # the distilled model runs without CFG (negative prompt is unused)
+guidance_2 = 1.0
+negative_prompt = ""
+offload = false  # fp8 storage keeps both experts + text encoder on an 80 GB / 40 GB GPU
+quantization = "fp8_storage"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer_2"
+
+[reference]
+scale = 24  # 384 px sprite on an 832x480 canvas
+
+[finalize]
+num_frames = 6
