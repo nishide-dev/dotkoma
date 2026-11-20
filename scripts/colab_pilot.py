@@ -4,6 +4,9 @@ Upload the repo source (``src/``, ``scripts/``) and the prepared run directory
 (``work/<run>/jobs.jsonl`` + ``work/<run>/inputs/``), then on the VM:
 
     python scripts/colab_pilot.py work/pilot [--limit N] [--sync-dir DIR] [--no-offload]
+    python scripts/colab_pilot.py work/pilot --stage plan   # VLM plans (plan_requests.jsonl)
+
+For ``--stage plan`` upload ``plan_requests.jsonl`` + ``inputs/`` instead of jobs.jsonl.
 
 GPU dependencies are installed here, not in the local uv environment. The
 versions that actually ran are written to ``<run>/colab_env.json``.
@@ -108,6 +111,7 @@ def main() -> None:
     p.add_argument("--sync-dir", help="e.g. /content/drive/MyDrive/dotkoma/pilot")
     p.add_argument("--no-offload", action="store_true", help="keep the whole model on GPU")
     p.add_argument("--skip-install", action="store_true")
+    p.add_argument("--stage", choices=["generate", "plan"], default="generate")
     a = p.parse_args()
 
     require_torch()
@@ -115,10 +119,16 @@ def main() -> None:
         ensure_deps()
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo / "src"))
-    from dotkoma.generate import generate
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     print(json.dumps(record_env(a.run_dir)), flush=True)
+    if a.stage == "plan":
+        from dotkoma.plan import plan
+
+        counts = plan(a.run_dir, limit=a.limit, retry_failed=a.retry_failed)
+        print(json.dumps(counts), flush=True)
+        return
+    from dotkoma.generate import generate
+
     counts = generate(
         a.run_dir,
         limit=a.limit,

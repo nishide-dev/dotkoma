@@ -336,6 +336,8 @@ def _write_sample(
         "generation_method": job["generation_method"],
         "prompt_method": job["prompt_method"],
         "prompt_variant": job["prompt_variant"],
+        **({"prompt": job["prompt"]} if "prompt" in job else {}),
+        **({"plan": job["plan"]} if "plan" in job else {}),
         "frames": [f"frames/{k:03d}.png" for k in range(len(frames))],
         "durations_ms": durations,
         "loop": True,

@@ -1,0 +1,187 @@
+# Pilot 04: the same 22 sprites and actions as pilot-03.toml, but Qwen3.5-9B writes the
+# motion instruction per sprite (method = "vlm"). Seeds derive from (sprite, action), so
+# each job matches its pilot-03 counterparts except for the prompt.
+#   prepare -> plan (Colab) -> prepare -> generate (Colab) -> finalize
+version = "pilot-04-v1"
+
+[run]
+name = "pilot-04"
+work_dir = "work"
+
+[source]
+kind = "atlas"
+repo_id = "Angais/pixel-art-atlas-1.4m"
+revision = "bf78f8c8cbafa6d07718111a94d41e2dd79ddaa7"
+shards = ["data/train-000.parquet"]
+
+[[sprites]]
+subject = "candle"
+actions = ["flicker"]
+
+[[sprites]]
+subject = "torch"
+actions = ["flicker"]
+
+[[sprites]]
+subject = "tea light"
+actions = ["flicker"]
+
+[[sprites]]
+subject = "mug of coffee"
+actions = ["steam"]
+
+[[sprites]]
+subject = "cup of herbal tea"
+actions = ["steam"]
+
+[[sprites]]
+subject = "soup bowl"
+actions = ["steam"]
+
+[[sprites]]
+subject = "chimney"
+actions = ["smoke"]
+
+[[sprites]]
+subject = "fire pit"
+actions = ["smoke"]
+
+[[sprites]]
+subject = "round potion flask"
+actions = ["bubble"]
+
+[[sprites]]
+subject = "cooking cauldron"
+actions = ["bubble"]
+
+[[sprites]]
+subject = "potion decanter"
+actions = ["bubble"]
+
+[[sprites]]
+subject = "star-cut gem"
+actions = ["sparkle"]
+
+[[sprites]]
+subject = "mana crystal"
+actions = ["sparkle"]
+
+[[sprites]]
+subject = "crown"
+actions = ["sparkle"]
+
+[[sprites]]
+subject = "waving flag"
+actions = ["flutter"]
+
+[[sprites]]
+subject = "castle flag"
+actions = ["flutter"]
+
+[[sprites]]
+subject = "flag on pole"
+actions = ["flutter"]
+
+[[sprites]]
+subject = "owl"
+actions = ["blink"]
+
+[[sprites]]
+subject = "frog"
+actions = ["blink"]
+
+[[sprites]]
+subject = "penguin"
+actions = ["blink"]
+
+[[sprites]]
+subject = "dog"
+actions = ["wag"]
+
+[[sprites]]
+subject = "fox"
+actions = ["wag"]
+
+# The VLM sees the sprite and this description, and writes {motion_text}.
+[actions.flicker]
+method = "vlm"
+motion = "local"
+description = "the flame flickers"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.steam]
+method = "vlm"
+motion = "local"
+description = "steam rises from it"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.smoke]
+method = "vlm"
+motion = "local"
+description = "smoke rises from it"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.bubble]
+method = "vlm"
+motion = "local"
+description = "the liquid inside bubbles"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.sparkle]
+method = "vlm"
+motion = "local"
+description = "a highlight glints on it"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.flutter]
+method = "vlm"
+motion = "local"
+description = "the cloth of the flag ripples in the wind"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.blink]
+method = "vlm"
+motion = "local"
+description = "it blinks its eyes"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.wag]
+method = "vlm"
+motion = "local"
+description = "it wags its tail"
+prompt_frame = "A pixel art {subject} on a flat solid background. {motion_text} Static camera, fixed viewpoint, same colors, crisp pixel art."
+
+[plan]
+backend = "qwen"
+model_id = "Qwen/Qwen3.5-9B"
+model_revision = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+max_new_tokens = 300
+image_scale = 16
+
+[generation]
+backend = "diffusers"
+model_id = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+model_revision = "596658fd9ca6b7b71d5057529bbf319ecbc61d74"
+width = 832   # 480p, the A14B reference resolution
+height = 480
+num_frames = 49  # ~3 s at 16 fps; Wan needs 4k+1 frames
+fps = 16
+steps = 4        # step-distilled by the Lightning LoRAs below
+guidance = 1.0   # the distilled model runs without CFG (negative prompt is unused)
+guidance_2 = 1.0
+negative_prompt = ""
+# CPU offload is needed on a 40 GB A100 (both experts + text encoder do not fit at once).
+# scripts/colab_pilot.py offloads by default; pass --no-offload on an 80 GB GPU.
+offload = true
+quantization = "fp8_storage"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer_2"
+
+[reference]
+scale = 24  # 384 px sprite on an 832x480 canvas
+
+[finalize]
+num_frames = 6

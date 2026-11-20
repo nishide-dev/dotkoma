@@ -9,6 +9,7 @@ from .config import Config
 from .imaging import Layout, choose_key_color, make_reference, save_png
 from .pixel_ops import expand as expand_pixel_ops
 from .pixel_ops import fits, sprite_digest
+from .plan import latest_plans, planner_spec, request_id
 from .records import derive_seed, job_id, stable_hash, write_json_atomic, write_jsonl_atomic
 from .source import Sprite, load_sprites, source_ref
 
@@ -115,6 +116,7 @@ def prepare(cfg: Config) -> Path:
 
     jobs: list[dict] = []
     seen: set[str] = set()
+    plans = _PlanBook(run, cfg)
     for pick in cfg.sprites:
         pool = found[pick.subject]
         if pick.row_id is not None:
@@ -153,7 +155,15 @@ def prepare(cfg: Config) -> Path:
                             seen.add(job["job_id"])
                             jobs.append(job)
                         continue
-                    prompt = build_prompt(action.prompts[variant], sp)
+                    plan_info = None
+                    if action.method == "vlm":
+                        prompt, plan_info = _planned_prompt(
+                            cfg, sp, action, src, src_png, run, plans
+                        )
+                        if prompt is None:
+                            continue  # awaiting a plan, or the VLM found the motion infeasible
+                    else:
+                        prompt = build_prompt(action.prompts[variant], sp)
                     # same seed for every wording, so variants differ only in the prompt
                     seed = (
                         g.seed if g.seed is not None else derive_seed(src, sp.row_id, action_name)
@@ -205,6 +215,7 @@ def prepare(cfg: Config) -> Path:
                             "key_color": key,
                             "input_png": src_png.relative_to(run).as_posix(),
                             "reference_png": ref_png.relative_to(run).as_posix(),
+                            **({"plan": plan_info} if plan_info else {}),
                         }
                     )
 
@@ -213,10 +224,67 @@ def prepare(cfg: Config) -> Path:
     )
     jobs_path = run / "jobs.jsonl"
     write_jsonl_atomic(jobs_path, jobs)
+    plans.finish()
     write_json_atomic(run / "config.snapshot.json", cfg.to_dict())
     log.info("wrote %d jobs to %s", len(jobs), jobs_path)
     _report_coverage(jobs)
     return jobs_path
+
+
+class _PlanBook:
+    """Plan requests prepare asks for, and the answers plan.py has written so far."""
+
+    def __init__(self, run: Path, cfg: Config) -> None:
+        self.run = run
+        self.spec = planner_spec(cfg.plan) if cfg.plan else None
+        self.answers = latest_plans(run)
+        self.requests: dict[str, dict] = {}
+        self.counts = {"planned": 0, "infeasible": 0, "awaiting": 0}
+
+    def finish(self) -> None:
+        if self.spec is None:
+            return
+        reqs = sorted(self.requests.values(), key=lambda q: q["request_id"])
+        write_jsonl_atomic(self.run / "plan_requests.jsonl", reqs)
+        log.info("plans: %s", self.counts)
+        if self.counts["awaiting"]:
+            log.warning(
+                "%d (sprite, action) pairs await a plan: run `plan`, then prepare again",
+                self.counts["awaiting"],
+            )
+
+
+def _planned_prompt(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, run: Path, book):
+    """(prompt, plan info) from the VLM's plan, or (None, None) if there is none to use."""
+    source = {**src, "row_id": sp.row_id}
+    act = {"name": action.name, "description": action.description}
+    rid = request_id(source, act, book.spec)
+    book.requests[rid] = {
+        "request_id": rid,
+        "source": {**source, "subject": sp.subject, "caption": sp.caption},
+        "action": act,
+        "input_png": src_png.relative_to(run).as_posix(),
+        "planner": book.spec,
+        "instruction": book.spec["instruction"].format(
+            subject=sp.subject,
+            caption=sp.caption,
+            action=action.name,
+            description=action.description,
+        ),
+    }
+    ans = book.answers.get(rid)
+    if not ans or ans["status"] != "ok":
+        book.counts["awaiting"] += 1
+        return None, None
+    if not ans["feasible"]:
+        book.counts["infeasible"] += 1
+        log.info("%s row %d: no %s (%s)", sp.subject, sp.row_id, action.name, ans["reason"])
+        return None, None
+    book.counts["planned"] += 1
+    prompt = action.prompt_frame.format(
+        subject=sp.subject, caption=sp.caption, motion_text=ans["motion_text"]
+    )
+    return prompt, {"request_id": rid, "moving_part": ans["moving_part"]}
 
 
 def _pixel_ops_job(cfg: Config, sp: Sprite, action, src: dict, src_png: Path, run: Path):
