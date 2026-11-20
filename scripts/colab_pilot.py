@@ -31,12 +31,27 @@ GPU_DEPS = [
     "transformers",
     "accelerate",
     "ftfy",
+    "peft",  # LoRA loading (step-distill LoRAs)
     "av",
     "huggingface_hub",
     "pillow",
     "numpy",
 ]
-RECORD = ["torch", "diffusers", "transformers", "accelerate", "av", "huggingface_hub", "numpy"]
+RECORD = [
+    "torch",
+    "diffusers",
+    "transformers",
+    "accelerate",
+    "peft",
+    "torchao",
+    "av",
+    "huggingface_hub",
+    "numpy",
+]
+# PEFT refuses to import with an old torchao installed (Colab shipped 0.10.0; PEFT needs
+# > 0.16). dotkoma does not use torchao, so an outdated copy is removed rather than upgraded
+# (an upgrade could pull a torch build that does not match the runtime).
+TORCHAO_MIN = (0, 16)
 
 
 def require_torch() -> None:
@@ -51,6 +66,13 @@ def require_torch() -> None:
 
 def ensure_deps() -> None:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *GPU_DEPS])
+    try:
+        ver = md.version("torchao")
+    except md.PackageNotFoundError:
+        return
+    if tuple(int(x) for x in ver.split(".")[:2]) <= TORCHAO_MIN:
+        print(f"removing torchao {ver} (incompatible with peft)", flush=True)
+        subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"])
 
 
 def record_env(run_dir: Path) -> dict:
