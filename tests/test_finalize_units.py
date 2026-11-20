@@ -84,7 +84,7 @@ def test_small_overflow_of_a_local_motion_is_a_note():
     src = np.zeros((16, 16, 4), np.uint8)
     src[4:12, 4:12] = 255
     moved = src.copy()
-    moved[4, 4] = 0
+    moved[4, 4:8] = 0  # enough change per step not to count as low_motion
     frames = [src, moved, src, moved]
     cfg = FinalizeConfig()
 
@@ -134,3 +134,48 @@ def test_postprocess_id_tracks_motion(smoke_cfg):
     assert all(first[k] != second[k] for k in first)
     sample = json.loads((run / "final" / jobs[0]["job_id"] / "sample.json").read_text())
     assert sample["postprocess_id"] == second[jobs[0]["job_id"]]
+
+
+def _block():
+    src = np.zeros((16, 16, 4), np.uint8)
+    src[4:12, 4:12] = (200, 80, 40, 255)
+    return src
+
+
+def test_low_motion_flags_a_nearly_static_loop():
+    src = _block()
+    blip = src.copy()
+    blip[5, 5:9] = (20, 20, 20, 255)  # one 4-px change, then nothing
+    cfg = FinalizeConfig()
+    r = run_checks([src, blip, blip, blip, blip, blip], src, 0, 0, cfg, "local")
+    assert r["motion_median"] == 0 and "low_motion" in r["flags"]
+    flicker = [src, blip, src, blip, src, blip]
+    assert "low_motion" not in run_checks(flicker, src, 0, 0, cfg, "local")["flags"]
+    same = run_checks([src] * 4, src, 0, 0, cfg)
+    assert "all_identical" in same["flags"] and "low_motion" not in same["flags"]
+
+
+def test_detail_lost_flags_a_part_that_never_comes_back():
+    from dotkoma.finalize import lost_detail
+
+    src = _block()
+    src[2:4, 6:9] = (240, 200, 90, 255)  # a 6-px "cookie" on top
+    gone = src.copy()
+    gone[2:4, 6:9] = 0
+    cfg = FinalizeConfig()
+    frames = [src, gone, gone, gone]
+    assert lost_detail(frames, src, 4) == 6
+    assert "detail_lost" in run_checks(frames, src, 0, 0, cfg, "local")["flags"]
+    # comes back in one frame: not lost
+    assert lost_detail([src, gone, src, gone], src, 4) == 0
+
+
+def test_detail_lost_ignores_translation():
+    from dotkoma.finalize import lost_detail
+    from dotkoma.pixel_ops import translate
+
+    src = _block()
+    up = [translate(src, 0, -2)] * 3  # airborne in every frame after the first
+    assert lost_detail([src, *up], src, 4) == 0
+    off = [translate(src, 0, -6)] * 3  # beyond max_shift: 2 rows can no longer be matched
+    assert lost_detail([src, *off], src, 4) == 16

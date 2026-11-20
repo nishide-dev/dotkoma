@@ -35,5 +35,7 @@
 | `loop_jump` | 要確認 | 最後→最初の差分が隣接コマの典型差分より大きい |
 | `edge_cut` | 要確認 | 16×16 枠のすぐ外側（1 マス幅の帯）の `edge_cut_fraction`（2%）超が前景。局所的な動き（`motion = "local"`）で `edge_cut_local_fraction`（未指定なら 6% と `edge_cut_fraction` の大きい方）以下なら、フラグではなく注記 `edge_overflow`（`checks.notes`）にする |
 | `background_unstable` | 要確認 | 画面の縁で背景色が保たれていない |
+| `low_motion` | 要確認 | 1 周（最後→最初を含む）の隣接差分の中央値が `low_motion_pixels`（3 px）未満。1〜2 回だけ変わって後は止まっているもの |
+| `detail_lost` | 要確認 | 元絵の不透明画素のうち、2 コマ目以降のどのコマにもない（各コマで最も一致する ±4px の平行移動で比べる）ものが `detail_lost_pixels`（5 px）超。小さな要素が消えたまま戻らないもの |
 | `identity_drift` | 要確認 | いずれかのコマが、元絵を ±4px 平行移動したどれとも 30% 超のピクセルで食い違う（描き直し・変身） |
 
