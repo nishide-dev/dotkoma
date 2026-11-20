@@ -1,0 +1,95 @@
+# Tiling probe, baseline: one sprite per video (resident, 25 frames). The tiled videos
+# are built from these jobs by the probe script (see docs/experiments/tiling-01.md).
+version = "tile-01"
+
+[run]
+name = "tile-1"
+work_dir = "work"
+
+[source]
+kind = "atlas"
+repo_id = "Angais/pixel-art-atlas-1.4m"
+revision = "bf78f8c8cbafa6d07718111a94d41e2dd79ddaa7"
+shards = ["data/train-000.parquet"]
+
+[[sprites]]
+subject = "candle"
+actions = ["flicker"]
+count = 2
+
+[[sprites]]
+subject = "torch"
+actions = ["flicker"]
+count = 2
+
+[[sprites]]
+subject = "tea light"
+actions = ["flicker"]
+count = 2
+
+[[sprites]]
+subject = "wall sconce torch"
+actions = ["flicker"]
+count = 2
+
+[[sprites]]
+subject = "cup of herbal tea"
+actions = ["steam"]
+count = 2
+
+[[sprites]]
+subject = "soup bowl"
+actions = ["steam"]
+count = 2
+
+[[sprites]]
+subject = "bowl of tomato soup"
+actions = ["steam"]
+count = 2
+
+[[sprites]]
+subject = "takeaway coffee cup"
+actions = ["steam"]
+count = 2
+
+[actions.flicker]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. Only the flame flickers gently, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+[actions.steam]
+motion = "local"
+prompt = "A pixel art {subject} on a flat solid background. Small wisps of steam rise from the {subject}, the {subject} itself stays still. Static camera, fixed viewpoint, same colors, crisp pixel art."
+
+[generation]
+backend = "diffusers"
+model_id = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+model_revision = "596658fd9ca6b7b71d5057529bbf319ecbc61d74"
+width = 832
+height = 480
+num_frames = 25  # Wan needs 4k+1 frames
+fps = 16
+steps = 4        # step-distilled by the Lightning LoRAs below
+guidance = 1.0   # the distilled model runs without CFG (negative prompt is unused)
+guidance_2 = 1.0
+negative_prompt = ""
+# CPU offload is needed on a 40 GB A100 (both experts + text encoder do not fit at once).
+# scripts/colab_pilot.py offloads by default; pass --no-offload on an 80 GB GPU.
+offload = "resident"
+quantization = "fp8_storage"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer"
+
+[[generation.loras]]
+repo = "lightx2v/Wan2.2-Distill-Loras"
+file = "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors"
+revision = "57adea585d1d21085e2dfc91ce3c7b646cdd9345"
+target = "transformer_2"
+
+[reference]
+scale = 24
+
+[finalize]
+num_frames = 6
