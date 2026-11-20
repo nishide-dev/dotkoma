@@ -78,3 +78,21 @@ def test_identity_drift_counts_pixels_cut_at_the_grid_edge(edge):
     }[edge]
     cut[row_or_col] = 0  # the outermost row/column is missing
     assert identity_drift(cut, src, 4) == pytest.approx(4 / 16)
+
+
+def test_small_overflow_of_a_local_motion_is_a_note():
+    src = np.zeros((16, 16, 4), np.uint8)
+    src[4:12, 4:12] = 255
+    moved = src.copy()
+    moved[4, 4] = 0
+    frames = [src, moved, src, moved]
+    cfg = FinalizeConfig()
+
+    def check(edge, motion):
+        r = run_checks(frames, src, edge, 0, cfg, motion)
+        return r["flags"], r["notes"]
+
+    assert check(0.01, "local") == ([], [])
+    assert check(0.05, "local") == ([], ["edge_overflow"])
+    assert check(0.05, "global") == (["edge_cut"], [])  # a hop that leaves the grid
+    assert check(0.10, "local") == (["edge_cut"], [])  # too much is still a flag
