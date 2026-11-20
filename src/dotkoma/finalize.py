@@ -232,6 +232,9 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
     H, W = video.shape[1:3]
     box = GridBox.from_layout(layout, W, H)
     source = load_rgba(run_dir / job["input_png"])
+    if "sprite_sha256" in job and pixel_ops.sprite_digest(source) != job["sprite_sha256"]:
+        # palette and checks would be measured against another sprite
+        raise ValueError(f"{job['input_png']} does not match the sprite this job was made for")
 
     idx, durations = select_frames(len(video), fps, sel, cfg.num_frames)
     # Wan reproduces frame 0 from the reference and then drifts the flat key colour

@@ -291,3 +291,22 @@ def test_generate_refuses_stale_inputs_for_a_vlm_job(smoke_cfg):
     last = [r for r in read_jsonl(cfg.run_dir / "results.jsonl") if r["job_id"] == j["job_id"]]
     assert last[-1]["status"] == "failed" and "does not match" in last[-1]["error"]
     assert not raw_path(cfg.run_dir, j["job_id"]).exists()
+
+
+def test_finalize_refuses_a_changed_sprite_for_a_vlm_job(smoke_cfg):
+    from dotkoma.finalize import finalize
+    from dotkoma.generate import generate
+    from dotkoma.imaging import load_rgba, save_png
+
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())
+    j = _vlm_jobs(cfg)[0]
+    generate(cfg.run_dir)
+    png = cfg.run_dir / j["input_png"]
+    rgba = load_rgba(png)
+    rgba[rgba[..., 3] > 0, 0] ^= 1  # inputs/ rewritten, jobs.jsonl not yet
+    save_png(png, rgba)
+    index = {r["job_id"]: r for r in finalize(cfg.run_dir, cfg.finalize)}
+    assert index[j["job_id"]]["status"] == "finalize_failed"
+    assert not (cfg.run_dir / "final" / j["job_id"]).exists()
