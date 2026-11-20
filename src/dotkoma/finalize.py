@@ -135,7 +135,9 @@ def run_checks(
     edge_cut: float,
     border_fg: float,
     cfg: FinalizeConfig,
+    motion: str = "global",
 ) -> dict[str, Any]:
+    """Machine checks. ``flags`` decide the verdict; ``notes`` are for the reviewer only."""
     n = len(frames)
     adjacent = [frame_diff(a, b) for a, b in pairwise(frames)]
     loop = frame_diff(frames[-1], frames[0]) if n > 1 else 0
@@ -162,13 +164,18 @@ def run_checks(
         flags.append("all_identical")
     if loop > cfg.loop_jump_factor * max(1.0, typical):
         flags.append("loop_jump")
+    notes = []
     if edge_cut > cfg.edge_cut_fraction:
-        flags.append("edge_cut")
+        if motion == "local" and edge_cut <= cfg.local_edge_limit():
+            notes.append("edge_overflow")  # a moving part pokes out a little and is cropped
+        else:
+            flags.append("edge_cut")
     if border_fg > cfg.background_unstable_fraction:
         flags.append("background_unstable")
     if max(m["identity_drift"]) > cfg.identity_drift_threshold:
         flags.append("identity_drift")
     m["flags"] = flags
+    m["notes"] = notes
     m["auto_verdict"] = (
         "reject" if any(f in HARD_FAILS for f in flags) else ("flagged" if flags else "candidate")
     )
@@ -209,10 +216,14 @@ def finalize_job(run_dir: Path, job: dict, cfg: FinalizeConfig, sel: dict | None
     d = cfg.new_color_distance
     frames = [snap_to_palette(f, palette, added, d / 2, novelty=d) for f in frames]
 
-    checks = run_checks(frames, source, edge, border, cfg)
+    checks = run_checks(frames, source, edge, border, cfg, job.get("motion", "global"))
     checks["background_drift"] = round(drift, 1)
     checks["added_colors"] = [rgb_to_hex(c) for c in added]
-    pp_id = stable_hash({"finalize": cfg.__dict__, "selection": sel or {}}, 12)
+    # motion decides edge_cut vs edge_overflow, and it can change without a new job_id
+    pp_id = stable_hash(
+        {"finalize": cfg.__dict__, "selection": sel or {}, "motion": job.get("motion", "global")},
+        12,
+    )
     extra = {
         "source_frame_indices": idx,
         "source_fps": fps,
@@ -249,9 +260,11 @@ def finalize_pixel_ops_job(run_dir: Path, job: dict, cfg: FinalizeConfig) -> dic
         raise ValueError(f"{job['input_png']} does not match the sprite this job was made for")
     ops = job["pixel_ops"]
     frames, lost = pixel_ops.render(source, ops["offsets"])
-    checks = run_checks(frames, source, lost, 0.0, cfg)
+    checks = run_checks(frames, source, lost, 0.0, cfg, job.get("motion", "global"))
     # check thresholds and preview_scale still apply (keying and palette settings do not)
-    pp_id = stable_hash({"finalize": cfg.__dict__, "pixel_ops": ops}, 12)
+    pp_id = stable_hash(
+        {"finalize": cfg.__dict__, "pixel_ops": ops, "motion": job.get("motion", "global")}, 12
+    )
     extra = {"pixel_ops": ops}
     return _write_sample(run_dir, job, frames, ops["durations_ms"], checks, pp_id, extra, cfg)
 
@@ -331,6 +344,7 @@ def finalize(run_dir: str | Path, cfg: FinalizeConfig) -> list[dict]:
                     "postprocess_id": s["postprocess_id"],
                     "auto_verdict": c["auto_verdict"],
                     "flags": c["flags"],
+                    "notes": c["notes"],
                 }
             )
         except Exception as e:

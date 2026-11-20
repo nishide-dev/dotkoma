@@ -27,11 +27,13 @@
 
 ## 品質チェック（`sample.json` の `checks`）
 
+`flags` が判定（`auto_verdict`）を決める。`notes` は判定を変えない目視向けの注記。
+
 | フラグ | 種類 | 意味 |
 |---|---|---|
 | `wrong_size` `frame_count` `empty_frame` `all_identical` | 除外 | 形式不正・全透過コマ・動きなし |
 | `loop_jump` | 要確認 | 最後→最初の差分が隣接コマの典型差分より大きい |
-| `edge_cut` | 要確認 | 16×16 枠の外側に前景がはみ出している |
+| `edge_cut` | 要確認 | 16×16 枠のすぐ外側（1 マス幅の帯）の `edge_cut_fraction`（2%）超が前景。局所的な動き（`motion = "local"`）で `edge_cut_local_fraction`（未指定なら 6% と `edge_cut_fraction` の大きい方）以下なら、フラグではなく注記 `edge_overflow`（`checks.notes`）にする |
 | `background_unstable` | 要確認 | 画面の縁で背景色が保たれていない |
 | `identity_drift` | 要確認 | いずれかのコマが、元絵を ±4px 平行移動したどれとも 30% 超のピクセルで食い違う（描き直し・変身） |
 

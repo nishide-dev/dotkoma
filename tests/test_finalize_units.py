@@ -78,3 +78,59 @@ def test_identity_drift_counts_pixels_cut_at_the_grid_edge(edge):
     }[edge]
     cut[row_or_col] = 0  # the outermost row/column is missing
     assert identity_drift(cut, src, 4) == pytest.approx(4 / 16)
+
+
+def test_small_overflow_of_a_local_motion_is_a_note():
+    src = np.zeros((16, 16, 4), np.uint8)
+    src[4:12, 4:12] = 255
+    moved = src.copy()
+    moved[4, 4] = 0
+    frames = [src, moved, src, moved]
+    cfg = FinalizeConfig()
+
+    def check(edge, motion):
+        r = run_checks(frames, src, edge, 0, cfg, motion)
+        return r["flags"], r["notes"]
+
+    assert check(0.01, "local") == ([], [])
+    assert check(0.05, "local") == ([], ["edge_overflow"])
+    assert check(0.05, "global") == (["edge_cut"], [])  # a hop that leaves the grid
+    assert check(0.10, "local") == (["edge_cut"], [])  # too much is still a flag
+
+
+def test_local_edge_limit_follows_a_raised_edge_cut_fraction(smoke_cfg):
+    from dotkoma.config import ConfigError, load_config
+
+    path = smoke_cfg.config_path
+    base = path.read_text()
+    path.write_text(base.replace("[finalize]\n", "[finalize]\nedge_cut_fraction = 0.1\n"))
+    f = load_config(path).finalize  # a config written before edge_cut_local_fraction
+    assert f.local_edge_limit() == 0.1
+    assert FinalizeConfig().local_edge_limit() == 0.06
+    lines = "edge_cut_fraction = 0.1\nedge_cut_local_fraction = 0.05\n"
+    path.write_text(base.replace("[finalize]\n", f"[finalize]\n{lines}"))
+    with pytest.raises(ConfigError):
+        load_config(path)  # set explicitly below edge_cut_fraction: still an error
+
+
+def test_postprocess_id_tracks_motion(smoke_cfg):
+    import json
+
+    from dotkoma.finalize import finalize
+    from dotkoma.generate import generate
+    from dotkoma.prepare import prepare
+    from dotkoma.records import read_jsonl, write_jsonl_atomic
+
+    run = smoke_cfg.run_dir
+    prepare(smoke_cfg)
+    generate(run)
+    first = {r["job_id"]: r["postprocess_id"] for r in finalize(run, smoke_cfg.finalize)}
+    jobs = read_jsonl(run / "jobs.jsonl")
+    for j in jobs:
+        j["motion"] = "local" if j.get("motion") != "local" else "global"  # reclassified
+    write_jsonl_atomic(run / "jobs.jsonl", jobs)
+    second = {r["job_id"]: r["postprocess_id"] for r in finalize(run, smoke_cfg.finalize)}
+    assert first.keys() == second.keys()
+    assert all(first[k] != second[k] for k in first)
+    sample = json.loads((run / "final" / jobs[0]["job_id"] / "sample.json").read_text())
+    assert sample["postprocess_id"] == second[jobs[0]["job_id"]]
