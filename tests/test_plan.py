@@ -272,3 +272,22 @@ def test_copy_atomic_keeps_the_old_copy_on_failure(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         copy_atomic(src, dst)
     assert dst.read_text() == "old\n" and list(dst.parent.iterdir()) == [dst]
+
+
+def test_generate_refuses_stale_inputs_for_a_vlm_job(smoke_cfg):
+    from dotkoma.generate import generate, raw_path
+    from dotkoma.imaging import load_rgba, save_png
+
+    cfg = _vlm_cfg(smoke_cfg, ("slime",))
+    prepare(cfg)
+    plan(cfg.run_dir, planner_factory=lambda spec: FakePlanner())
+    j = _vlm_jobs(cfg)[0]
+    assert len(j["sprite_sha256"]) == 64
+    ref = cfg.run_dir / j["reference_png"]
+    rgba = load_rgba(ref)
+    rgba[0, 0, 0] ^= 1  # a reference that was not made from this sprite
+    save_png(ref, rgba)
+    generate(cfg.run_dir)
+    last = [r for r in read_jsonl(cfg.run_dir / "results.jsonl") if r["job_id"] == j["job_id"]]
+    assert last[-1]["status"] == "failed" and "does not match" in last[-1]["error"]
+    assert not raw_path(cfg.run_dir, j["job_id"]).exists()

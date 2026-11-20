@@ -220,6 +220,11 @@ def prepare(cfg: Config) -> Path:
                             "input_png": src_png.relative_to(run).as_posix(),
                             "reference_png": ref_png.relative_to(run).as_posix(),
                             **({"plan": plan_info} if plan_info else {}),
+                            **(
+                                {"sprite_sha256": gen_inputs["sprite_sha256"]}
+                                if "sprite_sha256" in gen_inputs
+                                else {}
+                            ),
                         }
                     )
 
