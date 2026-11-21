@@ -38,8 +38,8 @@
 - 問うことは 2 つ。`motion_matches`: 指示した動作（`[judge.criteria]` か既定の `DEFAULT_CRITERIA` の説明）がはっきり起きているか。別の変化（湯気の代わりにきらめき、泡の代わりに液が満ちる、全体の色が変わる）やほぼ静止は false。`drawing_kept`: 動く部分以外が元絵のままか。両方 true なら `accept`
 - 既定の指示文は `diff_row` ごとに違う（`judge.DEFAULT_INSTRUCTIONS`。画像にない段を説明しないように）
 - `request_id` はコマと元絵の画素・使ったコマ番号・`postprocess_id`・実際の指示文・判定設定（シートの描き方が変わったら `SHEET_VERSION` を上げる）のハッシュ。後処理や判定設定を変えると新しい判定になる。推論の直前にコマと元絵を読み直し、依頼を作ったときと違えば（判定中に finalize し直したなど）失敗として記録する
-- `finalize.jsonl` がなければエラー。読めないサンプル（`sample.json` や PNG の欠け）は失敗として記録し、他のサンプルは判定を続ける。失敗は `--retry-failed` で再試行する
-- `--sync-dir` では、開始時に同期先の `judge.jsonl` にしかない記録を手元に取り込んでから書く（新しい VM で `judge.jsonl` をアップロードし忘れても、同期先の記録を短いログで上書きしない）
+- 開始前に止まる設定エラー: `finalize.jsonl` がない、判定の説明（`[judge.criteria]` / `DEFAULT_CRITERIA`）がない動作がある。読めない・形式の壊れたサンプル（`sample.json` や PNG の欠け、必要な項目の欠け）は失敗として記録し、他のサンプルは判定を続ける。失敗は `--retry-failed` で再試行する
+- `--sync-dir` では、開始時に同期先の `judge.jsonl` にしかない記録を手元に取り込んでから書く（新しい VM で `judge.jsonl` をアップロードし忘れても、同期先の記録を短いログで上書きしない）。合わせたログは `started_at` の順に並べ直す（同じ時刻なら手元の記録を後にする）ので、古い同期先の記録が新しい判定より後ろに来ない
 - 機械判定（`finalize.jsonl`）・VLM の判定（`judge.jsonl`）・目視（`review.jsonl`）は別のファイルに残す。一致率は `scripts/judge_agreement.py configs/judge.toml work/<run> ...` で見る（機械判定の行は対象のラベル付きサンプル全部、judge の行は判定のあるサンプルで数え、件数も出す）
 
 ## 品質チェック（`sample.json` の `checks`）

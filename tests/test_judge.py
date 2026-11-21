@@ -324,3 +324,28 @@ def test_a_fresh_vm_resumes_from_the_synced_log(run, tmp_path):
     assert len(calls) == total - 2  # the two synced verdicts are not redone
     synced = (sync / "judge.jsonl").read_bytes()
     assert synced.startswith(backup) and len(read_jsonl(sync / "judge.jsonl")) == total
+
+
+def test_a_malformed_sample_is_recorded_and_the_rest_are_judged(run):
+    ids = [q["job_id"] for q in build_requests(run, FAKE)]
+    path = run / "final" / ids[0] / "sample.json"
+    sample = json.loads(path.read_text())
+    del sample["source"]["subject"]
+    path.write_text(json.dumps(sample))
+    counts = judge(run, FAKE, judge_factory=lambda spec: FakeJudge())
+    assert counts == {"ok": len(ids) - 1, "failed": 1, "pending": 0}
+
+
+def test_a_stale_backup_does_not_override_a_newer_verdict(run, tmp_path):
+    sync = tmp_path / "sync"
+    judge(run, FAKE, judge_factory=lambda spec: FakeJudge(), sync_dir=sync)
+    recs = read_jsonl(run / "judge.jsonl")
+    rid = recs[0]["request_id"]
+    old = {**recs[0], "started_at": "2000-01-01T00:00:00+00:00", "verdict": "reject"}
+    write_jsonl_atomic(sync / "judge.jsonl", [old])  # backup has only an older answer
+    judge(run, FAKE, judge_factory=lambda spec: FakeJudge(), sync_dir=sync)
+    from dotkoma.judge import latest_verdicts
+
+    assert latest_verdicts(run)[rid]["verdict"] == "accept"
+    assert len(read_jsonl(run / "judge.jsonl")) == len(recs) + 1
+    assert read_jsonl(sync / "judge.jsonl") == read_jsonl(run / "judge.jsonl")

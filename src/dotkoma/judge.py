@@ -50,7 +50,14 @@ from PIL import Image, ImageDraw
 
 from .imaging import choose_key_color, hex_to_rgb, load_rgba
 from .plan import Planner, QwenPlanner
-from .records import append_jsonl, canonical_json, copy_atomic, read_jsonl, stable_hash
+from .records import (
+    append_jsonl,
+    canonical_json,
+    copy_atomic,
+    read_jsonl,
+    stable_hash,
+    write_jsonl_atomic,
+)
 
 log = logging.getLogger(__name__)
 
@@ -267,12 +274,46 @@ def _load(run_dir: Path, job_id: str) -> tuple[dict, np.ndarray, list[np.ndarray
     return sample, load_rgba(run_dir / sample["input_png"]), frames
 
 
+def _request(run_dir: Path, r: dict, spec: dict, criteria: str, max_frames: int) -> dict:
+    sample, source, frames = _load(run_dir, r["job_id"])
+    picked = pick_frames(len(frames), max_frames)
+    instruction = spec["instruction"].format(
+        subject=sample["source"]["subject"],
+        action=r["requested_action"],
+        criteria=criteria,
+        n=len(picked),
+    )
+    pixels = _digest([source, *frames])
+    rid = stable_hash(
+        {
+            "job_id": r["job_id"],
+            "postprocess_id": sample["postprocess_id"],
+            "pixels": pixels,
+            "frames": picked,
+            "judge": spec,
+            "instruction": instruction,
+        },
+        16,
+    )
+    return {
+        "request_id": rid,
+        "postprocess_id": sample["postprocess_id"],
+        "pixels": pixels,
+        "subject": sample["source"]["subject"],
+        "auto_verdict": r["auto_verdict"],
+        "frames": picked,
+        "instruction": instruction,
+    }
+
+
 def build_requests(run_dir: Path, cfg) -> list[dict]:
     """One request per finalized sample whose machine verdict is in ``cfg.verdicts``.
 
-    A sample whose files cannot be read gets a request with ``error`` set (recorded
-    as failed by ``judge``) so one broken sample does not stop the others. A missing
-    finalize.jsonl or an action without criteria is a setup error and raises.
+    A sample whose files cannot be read or are malformed gets a request with
+    ``error`` set (recorded as failed by ``judge``) so one broken sample does not
+    stop the others. Setup errors raise before anything is judged: a missing
+    finalize.jsonl, or an action without criteria (a config problem that affects
+    every sample of that action).
     """
     index = run_dir / "finalize.jsonl"
     if not index.exists():
@@ -288,8 +329,8 @@ def build_requests(run_dir: Path, cfg) -> list[dict]:
             raise ValueError(f"no judge criteria for action {action!r}: add [judge.criteria]")
         base = {"job_id": r["job_id"], "requested_action": action, "judge": spec}
         try:
-            sample, source, frames = _load(run_dir, r["job_id"])
-        except Exception as e:
+            out.append({**base, **_request(run_dir, r, spec, criteria[action], cfg.max_frames)})
+        except Exception as e:  # unreadable or malformed sample: recorded, others go on
             key = {"job_id": r["job_id"], "postprocess_id": r["postprocess_id"], "judge": spec}
             out.append(
                 {
@@ -299,38 +340,6 @@ def build_requests(run_dir: Path, cfg) -> list[dict]:
                     "error": f"{type(e).__name__}: {e}",
                 }
             )
-            continue
-        picked = pick_frames(len(frames), cfg.max_frames)
-        instruction = spec["instruction"].format(
-            subject=sample["source"]["subject"],
-            action=action,
-            criteria=criteria[action],
-            n=len(picked),
-        )
-        pixels = _digest([source, *frames])
-        rid = stable_hash(
-            {
-                "job_id": r["job_id"],
-                "postprocess_id": sample["postprocess_id"],
-                "pixels": pixels,
-                "frames": picked,
-                "judge": spec,
-                "instruction": instruction,
-            },
-            16,
-        )
-        out.append(
-            {
-                **base,
-                "request_id": rid,
-                "postprocess_id": sample["postprocess_id"],
-                "pixels": pixels,
-                "subject": sample["source"]["subject"],
-                "auto_verdict": r["auto_verdict"],
-                "frames": picked,
-                "instruction": instruction,
-            }
-        )
     return out
 
 
@@ -438,19 +447,26 @@ def close(shared: dict) -> None:
 
 def _restore(run_dir: Path, sync_dir: str | Path | None) -> None:
     """Take in records that only the synced copy has (e.g. a fresh VM resuming), so
-    the first sync does not overwrite the backup with a shorter log."""
+    the first sync does not overwrite the backup with a shorter log.
+
+    The merged log is ordered by ``started_at`` (stable for ties), so a stale backup
+    cannot put an older verdict after a newer one.
+    """
     if not sync_dir:
         return
     backup = Path(sync_dir) / "judge.jsonl"
     if not backup.exists():
         return
     log_path = run_dir / "judge.jsonl"
-    have = {canonical_json(r) for r in read_jsonl(log_path)}
+    local = read_jsonl(log_path)
+    have = {canonical_json(r) for r in local}
     extra = [r for r in read_jsonl(backup) if canonical_json(r) not in have]
-    for r in extra:
-        append_jsonl(log_path, r)
-    if extra:
-        log.info("restored %d judge records from %s", len(extra), backup)
+    if not extra:
+        return
+    # backup first: on equal timestamps the local record stays last and wins
+    merged = sorted(extra + local, key=lambda r: r.get("started_at", ""))
+    write_jsonl_atomic(log_path, merged)
+    log.info("restored %d judge records from %s", len(extra), backup)
 
 
 def _sync(run_dir: Path, sync_dir: str | Path | None) -> None:
