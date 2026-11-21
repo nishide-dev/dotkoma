@@ -70,3 +70,7 @@
 - 人の目視ラベルを一部に付けて、Claude のラベルとの一致を見る
 - judge を量産の流れに入れる: generate → finalize → judge → `candidate ∧ accept` だけを目視に回す
 - 落とした accept（煙突の煙など）は、動作ごとの説明（`[judge.criteria]`）で改善できるか
+
+## 再現
+
+`uv run python scripts/judge_agreement.py configs/judge.toml work/pilot-03 work/pilot-04 work/tile-1 work/tile-2-members work/tile-8-members --reviewer claude`（他の版は `configs/judge-ab/*.toml`）。この記録のラベルは Claude のもの（`reviewer: claude`）。同じ `review.jsonl` に後から人のラベル（`human-labels-01.md`）を加えたので、`--reviewer claude` を付ける。

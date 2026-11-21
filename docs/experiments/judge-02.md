@@ -68,3 +68,7 @@ Judge 01 との比較（機械 ∧ diff-sil）: 適合率 98% → 77%、再現�
 - 人の目視ラベルを一部に付ける。judge の誤りなのか、Claude のラベルの揺れなのかを分けるには、人の判断が要る
 - judge を全動作の関門にはしない。まず湯気（今回 6/6）で本数を増やして確かめ、炎などほかの動作は追加の評価をしてから使う。まばたき・尻尾は目視に回す
 - 判定の仕方を変える: 静止画の並びではなく動画として見せる、モデルを大きくする（Qwen3.5 の上位）、目・尻尾など動く部分を拡大して見せる
+
+## 再現
+
+`uv run python scripts/judge_agreement.py configs/judge.toml work/heldout-01 --reviewer claude`（他の版は `configs/judge-ab/*.toml`）。この記録のラベルは Claude のもの（`reviewer: claude`）。同じ `review.jsonl` に後から人のラベル（`human-labels-01.md`）を加えたので、`--reviewer claude` を付ける。
