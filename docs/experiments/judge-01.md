@@ -52,7 +52,7 @@
 
 ## 注意
 
-- **ラベルも判定者も AI。** ラベルは Claude、judge は Qwen。人の目視との一致はまだ測っていない
+- **ラベルも判定者も AI。** ラベルは Claude、judge は Qwen。この実験の時点では、人の目視との一致は測っていなかった（後の部分的な比較は `human-labels-01.md`）
 - **版の選択と評価が同じ 101 サンプル。** 6 版のうち最も良いものを選んだので、98% は楽観的な値。指示文の例（きらめき・雲・液が満ちる）も、この 101 本で見た失敗から書いた。別のサンプル（別の動作・題材）で測り直す必要がある
 - 各サンプル 1 回の判定（貪欲デコードなので同じ入力なら同じ答え）。動作ごとの本数は少ない（flutter・blink・wag は数本）
 
@@ -70,3 +70,7 @@
 - 人の目視ラベルを一部に付けて、Claude のラベルとの一致を見る
 - judge を量産の流れに入れる: generate → finalize → judge → `candidate ∧ accept` だけを目視に回す
 - 落とした accept（煙突の煙など）は、動作ごとの説明（`[judge.criteria]`）で改善できるか
+
+## 再現
+
+`uv run python scripts/judge_agreement.py configs/judge.toml work/pilot-03 work/pilot-04 work/tile-1 work/tile-2-members work/tile-8-members --reviewer claude`（他の版は `configs/judge-ab/*.toml`）。この記録のラベルは Claude のもの（`reviewer: claude`）。同じ `review.jsonl` に後から人のラベル（`human-labels-01.md`）を加えたので、`--reviewer claude` を付ける。

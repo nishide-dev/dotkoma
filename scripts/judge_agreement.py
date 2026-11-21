@@ -5,9 +5,10 @@
 Per sample: machine = finalize.jsonl auto_verdict (candidate counts as accept),
 judge = the ok judge.jsonl record for the request this judge config makes for the
 sample now (same frames, same settings and instruction),
-label = review.jsonl verdict (unsure is left out). Samples the machine rejects are
-not sent to the judge and are left out here as well. The machine row covers every
-eligible labelled sample; the judge rows cover the samples that have a verdict
+label = review.jsonl verdict (unsure is left out; ``--reviewer`` picks whose labels).
+Samples the machine rejects are not sent to the judge and are left out here as
+well. The machine row covers every eligible labelled sample; the judge rows cover
+the samples that have a verdict
 (the machine is shown again on that subset so the rows compare like with like).
 """
 
@@ -24,9 +25,13 @@ from dotkoma.judge import build_requests, latest_verdicts  # noqa: E402
 from dotkoma.records import latest_by_job, read_jsonl  # noqa: E402
 
 
-def rows(run: Path, cfg) -> list[dict]:
+def rows(run: Path, cfg, reviewer: str | None = None) -> list[dict]:
     fin = {r["job_id"]: r for r in read_jsonl(run / "finalize.jsonl") if r["status"] == "ok"}
-    review = latest_by_job(read_jsonl(run / "review.jsonl"))
+    review = latest_by_job(
+        r
+        for r in read_jsonl(run / "review.jsonl")
+        if reviewer is None or r.get("reviewer") == reviewer
+    )
     verdicts = latest_verdicts(run)
     judged: dict[str, dict] = {}
     for q in build_requests(run, cfg):
@@ -80,9 +85,14 @@ def main() -> None:
     p.add_argument("judge_config", type=Path)
     p.add_argument("runs", nargs="+", type=Path)
     p.add_argument("--quiet", action="store_true", help="tables only, no disagreement list")
+    p.add_argument(
+        "--reviewer",
+        help="only labels from this reviewer (e.g. claude, human); "
+        "default: the latest label per sample",
+    )
     a = p.parse_args()
     cfg = load_judge_config(a.judge_config)
-    every = [r for run in a.runs for r in rows(run, cfg)]
+    every = [r for run in a.runs for r in rows(run, cfg, a.reviewer)]
     rs = [r for r in every if r["judge"] is not None]
     print(
         f"{len(every)} eligible labelled samples (label accept {sum(r['label'] for r in every)}),"
