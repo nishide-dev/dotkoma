@@ -388,6 +388,12 @@ def test_merge_logs_refuses_histories_it_cannot_order():
     a2, b2, d2 = rec(10, True), rec(11, False), rec(12, False)
     merged = merge_logs([a2, c, d2], [b2, c])
     assert merged[-1] == d2
+    # ordered only through a shared record of another request: B < C < D
+    b3, d3 = rec(15, True), rec(16, False)
+    assert merge_logs([c, d3], [b3, c]) == [b3, c, d3]
+    # and the other way round: local A < C (shared) < backup E, so E is the latest
+    a4, e4 = rec(17, True), rec(18, False)
+    assert merge_logs([a4, c], [c, e4])[-1] == e4
     # backup's latest is known to be newer: local's latest also appears in the backup
     old, new = rec(13, True), rec(14, False)
     assert merge_logs([old], [old, new])[-1] == new

@@ -459,17 +459,18 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
     Where the order between the two histories is unknown it does not matter as long
     as they agree, so real disagreements raise ``LogConflict`` instead of silently
     picking one: shared records in a different order, or a request whose latest
-    ``ok`` answer differs between the logs when neither latest record appears in the
-    other log (so which one is newer is unknown).
+    ``ok`` answers differ between the logs with no shared record (either of the two,
+    or another one) ordering them, so which one is newer is unknown. A final check
+    confirms the merged log keeps the latest answer both logs imply.
     """
     key = canonical_json
-    pos = {key(r): i for i, r in enumerate(local)}
-    shared = [pos[key(r)] for r in backup if key(r) in pos]
+    local_idx = {key(r): i for i, r in enumerate(local)}
+    backup_idx = {key(r): i for i, r in enumerate(backup)}
+    shared = [local_idx[key(r)] for r in backup if key(r) in local_idx]
     if shared != sorted(shared):
         raise LogConflict(
             "the local and synced judge.jsonl list shared records in a different order"
         )
-    in_backup = {key(r) for r in backup}
 
     def last_ok(rows: list[dict]) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -481,6 +482,19 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
     def answer(r: dict) -> tuple:
         return (r.get("motion_matches"), r.get("drawing_kept"))
 
+    # shared records as (local index, backup index); their order agrees (checked above)
+    anchors = [(local_idx[k], backup_idx[k]) for k in backup_idx if k in local_idx]
+
+    def backup_first(b: dict, lo: dict) -> bool:
+        """Backup record b is known to come before local record lo: some shared
+        record is at or after b in the backup and at or before lo in the local log."""
+        bi, li = backup_idx[key(b)], local_idx[key(lo)]
+        return any(sb >= bi and sl <= li for sl, sb in anchors)
+
+    def local_first(lo: dict, b: dict) -> bool:
+        li, bi = local_idx[key(lo)], backup_idx[key(b)]
+        return any(sl >= li and sb <= bi for sl, sb in anchors)
+
     mine, theirs = last_ok(local), last_ok(backup)
     expected: dict[str, tuple] = {}
     clash = []
@@ -488,9 +502,9 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
         lr, br = mine.get(rid), theirs.get(rid)
         if lr is None or br is None or answer(lr) == answer(br):
             expected[rid] = answer(lr if lr is not None else br)
-        elif key(br) in pos:  # the backup's latest is in the local log, before local's latest
+        elif backup_first(br, lr):  # backup's latest is older
             expected[rid] = answer(lr)
-        elif key(lr) in in_backup:  # and the other way round
+        elif local_first(lr, br):  # local's latest is older
             expected[rid] = answer(br)
         else:  # two latest answers with no known order between them
             clash.append(rid)
@@ -504,8 +518,8 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
     anchor = -1
     for r in backup:
         k = key(r)
-        if k in pos:
-            anchor = pos[k]
+        if k in local_idx:
+            anchor = local_idx[k]
         else:
             after.setdefault(anchor, []).append(r)
     out = list(after.get(-1, []))
