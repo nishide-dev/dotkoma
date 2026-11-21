@@ -380,6 +380,17 @@ def test_merge_logs_refuses_histories_it_cannot_order():
         merge_logs([a, b], [b, a])
     with pytest.raises(LogConflict, match="disagree on 1"):
         merge_logs([rec(2, True)], [rec(3, False)])  # divergent, different answers
+    with pytest.raises(LogConflict, match="disagree on 1"):
+        # same answer sets, different latest answers, no known order between them
+        merge_logs([rec(5, True), rec(6, False)], [rec(7, False), rec(8, True)])
+    # the latest answers are ordered by a shared record: D after C in both logs
+    c = {"request_id": "y", "n": 9, "status": "ok", "motion_matches": True, "drawing_kept": True}
+    a2, b2, d2 = rec(10, True), rec(11, False), rec(12, False)
+    merged = merge_logs([a2, c, d2], [b2, c])
+    assert merged[-1] == d2
+    # backup's latest is known to be newer: local's latest also appears in the backup
+    old, new = rec(13, True), rec(14, False)
+    assert merge_logs([old], [old, new])[-1] == new
     same = merge_logs([rec(2)], [rec(3)])  # divergent but the same answer: fine
     assert len(same) == 2
     failed = {"request_id": "x", "n": 4, "status": "failed"}

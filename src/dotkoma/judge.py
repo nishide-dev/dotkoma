@@ -458,8 +458,9 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
 
     Where the order between the two histories is unknown it does not matter as long
     as they agree, so real disagreements raise ``LogConflict`` instead of silently
-    picking one: shared records in a different order, or a request with ``ok``
-    verdicts only in the local log and only in the backup that answer differently.
+    picking one: shared records in a different order, or a request whose latest
+    ``ok`` answer differs between the logs when neither latest record appears in the
+    other log (so which one is newer is unknown).
     """
     key = canonical_json
     pos = {key(r): i for i, r in enumerate(local)}
@@ -468,25 +469,35 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
         raise LogConflict(
             "the local and synced judge.jsonl list shared records in a different order"
         )
-    backup_only = [r for r in backup if key(r) not in pos]
     in_backup = {key(r) for r in backup}
-    local_only = [r for r in local if key(r) not in in_backup]
 
-    def answers(rows: list[dict]) -> dict[str, set]:
-        out: dict[str, set] = {}
+    def last_ok(rows: list[dict]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
         for r in rows:
             if r.get("status") == "ok":
-                out.setdefault(r["request_id"], set()).add(
-                    (r.get("motion_matches"), r.get("drawing_kept"))
-                )
+                out[r["request_id"]] = r
         return out
 
-    mine, theirs = answers(local_only), answers(backup_only)
-    clash = sorted(rid for rid in mine.keys() & theirs.keys() if mine[rid] != theirs[rid])
+    def answer(r: dict) -> tuple:
+        return (r.get("motion_matches"), r.get("drawing_kept"))
+
+    mine, theirs = last_ok(local), last_ok(backup)
+    expected: dict[str, tuple] = {}
+    clash = []
+    for rid in mine.keys() | theirs.keys():
+        lr, br = mine.get(rid), theirs.get(rid)
+        if lr is None or br is None or answer(lr) == answer(br):
+            expected[rid] = answer(lr if lr is not None else br)
+        elif key(br) in pos:  # the backup's latest is in the local log, before local's latest
+            expected[rid] = answer(lr)
+        elif key(lr) in in_backup:  # and the other way round
+            expected[rid] = answer(br)
+        else:  # two latest answers with no known order between them
+            clash.append(rid)
     if clash:
         raise LogConflict(
             f"local and synced judge.jsonl disagree on {len(clash)} request(s), e.g. "
-            f"{clash[:3]}: keep one log (move the other away) and run again"
+            f"{sorted(clash)[:3]}: keep one log (move the other away) and run again"
         )
 
     after: dict[int, list[dict]] = {}  # local index (-1 = start) -> backup-only records
@@ -501,6 +512,9 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
     for i, r in enumerate(local):
         out.append(r)
         out.extend(after.get(i, []))
+    got = {rid: answer(r) for rid, r in last_ok(out).items()}
+    if got != expected:  # guard: the merge must keep the answer both logs imply
+        raise LogConflict("merging the judge logs would change a latest verdict")
     return out
 
 
