@@ -1,0 +1,11 @@
+# A/B: v1 instruction + diff row
+[judge]
+backend = "qwen"
+model_id = "Qwen/Qwen3.5-9B"
+model_revision = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+scale = 12
+max_frames = 8
+verdicts = ["candidate", "flagged"]
+max_new_tokens = 200
+diff_row = "faded"
+instruction = "The image shows a looping pixel-art animation of \"{subject}\". The first panel, labelled S, is the original 16x16 sprite. Panels 1 to {n} are the frames of the loop in order; after frame {n} the loop starts again at frame 1. Every panel is enlarged by the same amount. In the bottom row, under each frame, a faded copy of S marks in magenta every pixel where that frame differs from S.\n\nThe requested motion is \"{action}\": {criteria}.\n\nJudge only what is visible in the panels, and be strict:\n- motion_matches: does the requested motion clearly happen across the frames? Answer false when the frames barely change, or when a different change happens instead (for example sparkles or clouds instead of steam, liquid filling up instead of bubbles, the whole object changing colour, the object moving or turning).\n- drawing_kept: apart from the part that does the motion, do the frames keep the original drawing of panel S (same shape, same colours, no part disappearing, nothing added except what the motion itself adds)?\n\nAnswer with one JSON object and nothing else:\n{{\"motion_matches\": true or false, \"drawing_kept\": true or false, \"reason\": \"one short sentence about what changes across the frames\"}}"

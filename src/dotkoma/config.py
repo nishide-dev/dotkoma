@@ -92,6 +92,22 @@ class PlanConfig:
 
 
 @dataclass(frozen=True)
+class JudgeConfig:
+    """The VLM that checks finalized loops against their action (see judge.py)."""
+
+    backend: str = "qwen"  # "qwen" | "fake"
+    model_id: str = "Qwen/Qwen3.5-9B"
+    model_revision: str = ""  # pinned commit (the answers depend on it)
+    max_new_tokens: int = 200
+    scale: int = 12  # each 16x16 panel is shown at 192x192
+    max_frames: int = 8  # longer loops are subsampled evenly
+    diff_row: str = "silhouette"  # "none" | "faded" | "silhouette": row marking changed pixels
+    verdicts: tuple[str, ...] = ("candidate", "flagged")  # machine verdicts to judge
+    instruction: str = ""  # "" = judge.DEFAULT_INSTRUCTION
+    criteria: dict[str, str] = field(default_factory=dict)  # per action, overrides defaults
+
+
+@dataclass(frozen=True)
 class GenerationConfig:
     backend: str  # "diffusers" | "fake" | "none" (only pixel_ops actions)
     model_id: str = ""
@@ -312,6 +328,40 @@ def load_config(path: str | Path, work_dir: str | Path | None = None) -> Config:
 
     _validate(cfg)
     return cfg
+
+
+def load_judge_config(path: str | Path) -> JudgeConfig:
+    """``[judge]`` of a standalone TOML (the judge runs over several run dirs)."""
+    path = Path(path)
+    with path.open("rb") as f:
+        raw = tomllib.load(f)
+    try:
+        spec = dict(raw["judge"])
+        if "verdicts" in spec:
+            spec["verdicts"] = _tuple(spec["verdicts"])
+        j = JudgeConfig(**spec)
+    except (KeyError, TypeError) as e:
+        raise ConfigError(f"{path}: invalid judge config: {e}") from e
+    if j.backend not in ("qwen", "fake"):
+        raise ConfigError(f"unknown judge.backend {j.backend!r}")
+    if j.backend == "qwen" and not re.fullmatch(r"[0-9a-f]{40}", j.model_revision):
+        raise ConfigError("judge.model_revision must be a pinned 40-char commit")
+    if not set(j.verdicts) <= {"candidate", "flagged", "reject"} or not j.verdicts:
+        raise ConfigError(f"judge.verdicts must be candidate / flagged / reject, got {j.verdicts}")
+    for k in ("scale", "max_frames", "max_new_tokens"):
+        v = getattr(j, k)
+        if not isinstance(v, int) or isinstance(v, bool) or v < (2 if k == "max_frames" else 1):
+            raise ConfigError(f"judge.{k} must be an integer >= 1 (max_frames >= 2), got {v!r}")
+    if j.diff_row not in ("none", "faded", "silhouette"):
+        raise ConfigError(f"judge.diff_row must be none / faded / silhouette, got {j.diff_row!r}")
+    if not all(isinstance(v, str) and v for v in j.criteria.values()):
+        raise ConfigError("judge.criteria values must be non-empty strings")
+    if j.instruction:
+        try:
+            j.instruction.format(subject="", action="", criteria="", n=0)
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConfigError(f"judge.instruction: bad placeholder {e}") from e
+    return j
 
 
 def number(v) -> bool:
