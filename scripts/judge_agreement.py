@@ -6,7 +6,9 @@ Per sample: machine = finalize.jsonl auto_verdict (candidate counts as accept),
 judge = the ok judge.jsonl record for the request this judge config makes for the
 sample now (same frames, same settings and instruction),
 label = review.jsonl verdict (unsure is left out). Samples the machine rejects are
-not sent to the judge and are left out here as well.
+not sent to the judge and are left out here as well. The machine row covers every
+eligible labelled sample; the judge rows cover the samples that have a verdict
+(the machine is shown again on that subset so the rows compare like with like).
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ def rows(run: Path, cfg) -> list[dict]:
     verdicts = latest_verdicts(run)
     judged: dict[str, dict] = {}
     for q in build_requests(run, cfg):
+        if "error" in q:
+            continue  # unreadable sample: no verdict
         r = verdicts.get(q["request_id"])
         if r and r["status"] == "ok":
             judged[q["job_id"]] = r
@@ -68,7 +72,7 @@ def table(name: str, rs: list[dict], pred) -> str:
     acc = (tp + tn) / n if n else 0
     prec = tp / (tp + fp) if tp + fp else 0
     rec = tp / (tp + fn) if tp + fn else 0
-    return f"| {name} | {tp + fp} | {tp} | {fp} | {fn} | {acc:.0%} | {prec:.0%} | {rec:.0%} |"
+    return f"| {name} | {n} | {tp + fp} | {tp} | {fp} | {fn} | {acc:.0%} | {prec:.0%} | {rec:.0%} |"
 
 
 def main() -> None:
@@ -78,18 +82,20 @@ def main() -> None:
     p.add_argument("--quiet", action="store_true", help="tables only, no disagreement list")
     a = p.parse_args()
     cfg = load_judge_config(a.judge_config)
-    rs = [r for run in a.runs for r in rows(run, cfg)]
-    missing = [r for r in rs if r["judge"] is None]
-    if missing:
-        print(f"{len(missing)} labelled samples have no judge verdict; they are left out")
-    rs = [r for r in rs if r["judge"] is not None]
-    print(f"{len(rs)} samples, label accept {sum(r['label'] for r in rs)}\n")
+    every = [r for run in a.runs for r in rows(run, cfg)]
+    rs = [r for r in every if r["judge"] is not None]
     print(
-        "| | passed | passed & label accept | passed & label reject | missed accept "
+        f"{len(every)} eligible labelled samples (label accept {sum(r['label'] for r in every)}),"
+        f" {len(rs)} with a judge verdict\n"
+    )
+    print(
+        "| | samples | passed | passed & label accept | passed & label reject | missed accept "
         "| agreement | precision | recall |"
     )
-    print("|---|---|---|---|---|---|---|---|")
-    print(table("machine (candidate)", rs, lambda r: r["machine"]))
+    print("|---|---|---|---|---|---|---|---|---|")
+    print(table("machine (candidate), all", every, lambda r: r["machine"]))
+    if len(rs) != len(every):
+        print(table("machine (candidate), judged subset", rs, lambda r: r["machine"]))
     print(table("judge (accept)", rs, lambda r: r["judge"]))
     print(table("machine and judge", rs, lambda r: r["machine"] and r["judge"]))
     for k in ("motion", "drawing"):

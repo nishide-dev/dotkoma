@@ -20,7 +20,9 @@ A person reviewing samples should look at the same sheet.
 File contract (``work/<run>/``):
   finalize.jsonl, final/<job_id>/  read (from finalize)
   judge.jsonl                      append-only, written here; the last ``ok`` record
-                                   per request_id counts. Re-running resumes.
+                                   per request_id counts. Re-running resumes. With a
+                                   sync dir, records only the synced copy has are
+                                   taken in first (a fresh VM resumes from it).
 
 ``request_id`` hashes the frames, the source pixels, the rendered instruction and
 the judge settings, so re-finalizing or changing the judge gives new requests.
@@ -48,7 +50,7 @@ from PIL import Image, ImageDraw
 
 from .imaging import choose_key_color, hex_to_rgb, load_rgba
 from .plan import Planner, QwenPlanner
-from .records import append_jsonl, copy_atomic, read_jsonl, stable_hash
+from .records import append_jsonl, canonical_json, copy_atomic, read_jsonl, stable_hash
 
 log = logging.getLogger(__name__)
 
@@ -68,15 +70,13 @@ DEFAULT_CRITERIA = {
     "wag": "the tail swings; the body and the head stay the same",
 }
 
-# Shown to the VLM with the diff_row = "silhouette" sheet (Judge 01 "diff-sil").
-# {subject}, {action}, {criteria}, {n} are filled per sample.
-DEFAULT_INSTRUCTION = """\
+# Shown to the VLM. {subject}, {action}, {criteria}, {n} are filled per sample;
+# {row} becomes the sentence describing the diff row (DIFF_ROW_NOTES).
+_INSTRUCTION = """\
 The image shows a looping pixel-art animation of "{subject}". The first panel, \
 labelled S, is the original 16x16 sprite. Panels 1 to {n} are the frames of the loop \
 in order; after frame {n} the loop starts again at frame 1. Every panel is enlarged \
-by the same amount. In the bottom row, under each frame, the shape of S is drawn in \
-flat grey and every pixel where that frame differs from S is marked in magenta (grey \
-is not a colour of the frame).
+by the same amount.{row}
 
 The requested motion is "{action}": {criteria}.
 
@@ -92,11 +92,29 @@ added except what the motion itself adds)?
 Answer with one JSON object and nothing else:
 {{"motion_matches": true or false, "drawing_kept": true or false, "reason": "one \
 short sentence about what changes across the frames"}}"""
+DIFF_ROW_NOTES = {
+    "none": "",
+    "faded": " In the bottom row, under each frame, a faded copy of S marks in magenta "
+    "every pixel where that frame differs from S.",
+    "silhouette": " In the bottom row, under each frame, the shape of S is drawn in flat "
+    "grey and every pixel where that frame differs from S is marked in magenta (grey is "
+    "not a colour of the frame).",
+}
+# The default instruction per diff_row, so the text always matches the sheet. These
+# are exactly the Judge 01 "v1", "diff" and "diff-sil" instructions.
+DEFAULT_INSTRUCTIONS = {
+    mode: _INSTRUCTION.replace("{row}", note) for mode, note in DIFF_ROW_NOTES.items()
+}
+DEFAULT_INSTRUCTION = DEFAULT_INSTRUCTIONS["silhouette"]
 
 # Sheet backgrounds: the one farthest from every colour in the panels is used, so
 # white steam is not lost on a white background.
 SHEET_BACKGROUNDS = ("#ffffff", "#202020", "#4a6fa5")
 DIFF_ROWS = ("none", "faded", "silhouette")
+# Bump when ``sheet`` or ``changed_pixels`` draw a different picture for the same
+# inputs: it is part of request_id (left out while it is 1, so the requests recorded
+# for Judge 01 keep their ids).
+SHEET_VERSION = 1
 LABEL_H = 14
 
 
@@ -109,12 +127,14 @@ def judge_spec(j) -> dict[str, Any]:
         "max_new_tokens": j.max_new_tokens,
         "scale": j.scale,
         "max_frames": j.max_frames,
-        "instruction": j.instruction or DEFAULT_INSTRUCTION,
+        "instruction": j.instruction or DEFAULT_INSTRUCTIONS[j.diff_row],
     }
     # only when on, so requests made before the option keep their ids; "faded" was
     # the first diff row and was recorded as true
     if j.diff_row != "none":
         spec["diff_row"] = True if j.diff_row == "faded" else j.diff_row
+    if SHEET_VERSION != 1:
+        spec["sheet_version"] = SHEET_VERSION
     return spec
 
 
@@ -240,33 +260,59 @@ def _digest(arrays: list[np.ndarray]) -> str:
     return h.hexdigest()
 
 
+def _load(run_dir: Path, job_id: str) -> tuple[dict, np.ndarray, list[np.ndarray]]:
+    sdir = run_dir / "final" / job_id
+    sample = json.loads((sdir / "sample.json").read_text())
+    frames = [load_rgba(sdir / f) for f in sample["frames"]]
+    return sample, load_rgba(run_dir / sample["input_png"]), frames
+
+
 def build_requests(run_dir: Path, cfg) -> list[dict]:
-    """One request per finalized sample whose machine verdict is in ``cfg.verdicts``."""
+    """One request per finalized sample whose machine verdict is in ``cfg.verdicts``.
+
+    A sample whose files cannot be read gets a request with ``error`` set (recorded
+    as failed by ``judge``) so one broken sample does not stop the others. A missing
+    finalize.jsonl or an action without criteria is a setup error and raises.
+    """
+    index = run_dir / "finalize.jsonl"
+    if not index.exists():
+        raise FileNotFoundError(f"{index} not found: run finalize first and upload it")
     spec = judge_spec(cfg)
     criteria = {**DEFAULT_CRITERIA, **cfg.criteria}
     out = []
-    for r in read_jsonl(run_dir / "finalize.jsonl"):
+    for r in read_jsonl(index):
         if r["status"] != "ok" or r["auto_verdict"] not in cfg.verdicts:
             continue
         action = r["requested_action"]
         if action not in criteria:
             raise ValueError(f"no judge criteria for action {action!r}: add [judge.criteria]")
-        sdir = run_dir / "final" / r["job_id"]
-        sample = json.loads((sdir / "sample.json").read_text())
-        frames = [load_rgba(sdir / f) for f in sample["frames"]]
+        base = {"job_id": r["job_id"], "requested_action": action, "judge": spec}
+        try:
+            sample, source, frames = _load(run_dir, r["job_id"])
+        except Exception as e:
+            key = {"job_id": r["job_id"], "postprocess_id": r["postprocess_id"], "judge": spec}
+            out.append(
+                {
+                    **base,
+                    "request_id": stable_hash({**key, "unreadable": True}, 16),
+                    "postprocess_id": r["postprocess_id"],
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+            continue
         picked = pick_frames(len(frames), cfg.max_frames)
-        source = load_rgba(run_dir / sample["input_png"])
         instruction = spec["instruction"].format(
             subject=sample["source"]["subject"],
             action=action,
             criteria=criteria[action],
             n=len(picked),
         )
+        pixels = _digest([source, *frames])
         rid = stable_hash(
             {
                 "job_id": r["job_id"],
                 "postprocess_id": sample["postprocess_id"],
-                "pixels": _digest([source, *frames]),
+                "pixels": pixels,
                 "frames": picked,
                 "judge": spec,
                 "instruction": instruction,
@@ -275,15 +321,14 @@ def build_requests(run_dir: Path, cfg) -> list[dict]:
         )
         out.append(
             {
+                **base,
                 "request_id": rid,
-                "job_id": r["job_id"],
                 "postprocess_id": sample["postprocess_id"],
-                "requested_action": action,
+                "pixels": pixels,
                 "subject": sample["source"]["subject"],
                 "auto_verdict": r["auto_verdict"],
                 "frames": picked,
                 "instruction": instruction,
-                "judge": spec,
             }
         )
     return out
@@ -311,6 +356,7 @@ def judge(
 ) -> dict[str, int]:
     """Judge pending samples of one run. ``shared`` caches the loaded model across runs."""
     run_dir = Path(run_dir)
+    _restore(run_dir, sync_dir)
     last = latest_verdicts(run_dir)
     todo = []
     for q in build_requests(run_dir, cfg):
@@ -326,15 +372,11 @@ def judge(
         return counts
 
     spec = judge_spec(cfg)
-    key = json.dumps(spec, sort_keys=True)
-    cache = shared if shared is not None else {}
-    if key not in cache:
-        t0 = time.monotonic()
-        model = judge_factory(spec)
-        log.info("loaded judge %s in %.1fs", spec["id"] or "fake", time.monotonic() - t0)
-        cache[key] = model
-    model = cache[key]
-    runtime = {"python": platform.python_version(), "host": platform.node(), **model.info}
+    if all("error" in q for q in todo):
+        model = None  # nothing to show the model; record the failures only
+        runtime = {"python": platform.python_version(), "host": platform.node()}
+    else:
+        model, runtime = _model(spec, shared, judge_factory)
 
     for q in todo:
         rec: dict[str, Any] = {
@@ -346,10 +388,15 @@ def judge(
         }
         t1 = time.monotonic()
         try:
-            sdir = run_dir / "final" / q["job_id"]
-            sample = json.loads((sdir / "sample.json").read_text())
-            frames = [load_rgba(sdir / sample["frames"][i]) for i in q["frames"]]
-            source = load_rgba(run_dir / sample["input_png"])
+            if "error" in q:
+                raise ValueError(f"sample files unreadable: {q['error']}")
+            sample, source, frames = _load(run_dir, q["job_id"])
+            if sample["postprocess_id"] != q["postprocess_id"] or q["pixels"] != _digest(
+                [source, *frames]
+            ):
+                # e.g. re-finalized while judging: the verdict must match the request id
+                raise ValueError("sample changed since the request was built; run again")
+            frames = [frames[i] for i in q["frames"]]
             img = sheet(source, frames, spec["scale"], diff_row=_diff_row(spec))
             raw = model(img, q["instruction"])
             rec["raw"] = raw
@@ -370,12 +417,40 @@ def judge(
     return counts
 
 
+def _model(spec: dict, shared: dict | None, factory: Callable[[dict], Planner]):
+    key = json.dumps(spec, sort_keys=True)
+    cache = shared if shared is not None else {}
+    if key not in cache:
+        t0 = time.monotonic()
+        cache[key] = factory(spec)
+        log.info("loaded judge %s in %.1fs", spec["id"] or "fake", time.monotonic() - t0)
+    model = cache[key]
+    return model, {"python": platform.python_version(), "host": platform.node(), **model.info}
+
+
 def close(shared: dict) -> None:
     for m in shared.values():
         if hasattr(m, "close"):
             m.close()
     shared.clear()
     gc.collect()
+
+
+def _restore(run_dir: Path, sync_dir: str | Path | None) -> None:
+    """Take in records that only the synced copy has (e.g. a fresh VM resuming), so
+    the first sync does not overwrite the backup with a shorter log."""
+    if not sync_dir:
+        return
+    backup = Path(sync_dir) / "judge.jsonl"
+    if not backup.exists():
+        return
+    log_path = run_dir / "judge.jsonl"
+    have = {canonical_json(r) for r in read_jsonl(log_path)}
+    extra = [r for r in read_jsonl(backup) if canonical_json(r) not in have]
+    for r in extra:
+        append_jsonl(log_path, r)
+    if extra:
+        log.info("restored %d judge records from %s", len(extra), backup)
 
 
 def _sync(run_dir: Path, sync_dir: str | Path | None) -> None:

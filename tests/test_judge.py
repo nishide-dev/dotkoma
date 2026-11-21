@@ -210,7 +210,7 @@ def test_cli_and_agreement_script(run, tmp_path):
     write_jsonl_atomic(run / "review.jsonl", labels)
     script = [sys.executable, str(ROOT / "scripts" / "judge_agreement.py"), str(cfg), str(run)]
     rep = subprocess.run(script, capture_output=True, text=True, check=True).stdout
-    assert f"{len(fin)} samples" in rep and "| judge (accept) |" in rep
+    assert f"{len(fin)} eligible labelled samples" in rep and "| judge (accept) |" in rep
 
 
 def test_diff_row_marks_changed_pixels():
@@ -237,3 +237,90 @@ def test_diff_row_marks_changed_pixels():
     assert tuple(faded[row2 + 2 * 2, x + 2 * 2]) == (255, 0, 255)
     with pytest.raises(ValueError):
         sheet(src, [moved], scale=2, diff_row="other")
+
+
+def test_recorded_judge_specs_keep_their_hashes():
+    """Judge 01's judge.jsonl records were written with these specs; a change here
+    orphans them (bump SHEET_VERSION or add a setting instead of editing silently)."""
+    from dotkoma.judge import judge_spec
+    from dotkoma.records import stable_hash
+
+    expected = {
+        "v1": "0d6ea301bcd3cb09",
+        "diff": "6d6b3f848974bb36",
+        "diff-sil": "cadf4ab6cf2b746d",
+        "describe": "e88d0b93c2c6dd74",
+        "both": "465856fe0c388773",
+        "both-sil": "b104897013a6482f",
+    }
+    for name, h in expected.items():
+        cfg = load_judge_config(ROOT / "configs" / "judge-ab" / f"{name}.toml")
+        assert stable_hash(judge_spec(cfg), 16) == h, name
+    default = load_judge_config(ROOT / "configs" / "judge.toml")
+    assert stable_hash(judge_spec(default), 16) == expected["diff-sil"]
+
+
+def test_default_instruction_follows_the_diff_row():
+    from dotkoma.judge import DEFAULT_INSTRUCTIONS, judge_spec
+
+    for mode in ("none", "faded", "silhouette"):
+        spec = judge_spec(replace(FAKE, diff_row=mode))
+        assert spec["instruction"] == DEFAULT_INSTRUCTIONS[mode]
+    assert "bottom row" not in DEFAULT_INSTRUCTIONS["none"]
+    assert "faded copy" in DEFAULT_INSTRUCTIONS["faded"]
+    assert "flat grey" in DEFAULT_INSTRUCTIONS["silhouette"]
+
+
+def test_missing_finalize_index_is_an_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match="finalize"):
+        judge(tmp_path, FAKE, judge_factory=lambda spec: FakeJudge())
+
+
+def test_an_unreadable_sample_is_recorded_and_the_rest_are_judged(run):
+    ids = [q["job_id"] for q in build_requests(run, FAKE)]
+    broken = ids[0]
+    (run / "final" / broken / "sample.json").write_text("{not json")
+    counts = judge(run, FAKE, judge_factory=lambda spec: FakeJudge())
+    assert counts == {"ok": len(ids) - 1, "failed": 1, "pending": 0}
+    recs = {r["job_id"]: r for r in read_jsonl(run / "judge.jsonl")}
+    assert recs[broken]["status"] == "failed" and "unreadable" in recs[broken]["error"]
+    # skipped on resume, retried with --retry-failed
+    assert judge(run, FAKE, judge_factory=lambda spec: FakeJudge())["pending"] == 0
+    assert judge(run, FAKE, retry_failed=True, judge_factory=lambda s: FakeJudge())["failed"] == 1
+
+
+def test_a_sample_changed_during_the_run_is_not_judged_under_the_old_id(run):
+    from dotkoma.imaging import load_rgba, save_png
+
+    ids = [q["job_id"] for q in build_requests(run, FAKE)]
+    victim = ids[-1]
+
+    class Refinalizes(FakeJudge):
+        def __call__(self, image, instruction):
+            sdir = run / "final" / victim
+            frame = json.loads((sdir / "sample.json").read_text())["frames"][1]
+            f = load_rgba(sdir / frame)
+            f[0, 0] = (9, 9, 9, 255)
+            save_png(sdir / frame, f)
+            return super().__call__(image, instruction)
+
+    counts = judge(run, FAKE, judge_factory=lambda spec: Refinalizes())
+    recs = {r["job_id"]: r for r in read_jsonl(run / "judge.jsonl")}
+    assert recs[victim]["status"] == "failed" and "changed" in recs[victim]["error"]
+    assert counts["failed"] == 1
+    # the next run builds a new request for the new frames and judges it
+    assert judge(run, FAKE, judge_factory=lambda spec: FakeJudge())["ok"] == 1
+
+
+def test_a_fresh_vm_resumes_from_the_synced_log(run, tmp_path):
+    sync = tmp_path / "sync"
+    first = judge(run, FAKE, limit=2, judge_factory=lambda s: FakeJudge(), sync_dir=sync)
+    assert first["ok"] == 2
+    backup = (sync / "judge.jsonl").read_bytes()
+    (run / "judge.jsonl").unlink()  # a fresh VM: judge.jsonl was not uploaded
+    calls, factory = _counting()
+    judge(run, FAKE, judge_factory=factory, sync_dir=sync)
+    total = len(build_requests(run, FAKE))
+    assert len(calls) == total - 2  # the two synced verdicts are not redone
+    synced = (sync / "judge.jsonl").read_bytes()
+    assert synced.startswith(backup) and len(read_jsonl(sync / "judge.jsonl")) == total

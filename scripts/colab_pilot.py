@@ -11,7 +11,8 @@ Upload the repo source (``src/``, ``scripts/``) and the prepared run directory
 
 For ``--stage plan`` upload ``plan_requests.jsonl`` + ``inputs/`` instead of jobs.jsonl.
 For ``--stage judge`` upload ``finalize.jsonl`` + ``final/`` + ``inputs/`` and the
-judge config.
+judge config (plus an earlier ``judge.jsonl`` to resume; with ``--sync-dir`` the
+synced copy is taken in first).
 
 GPU dependencies are installed here, not in the local uv environment. The
 versions that actually ran are written to ``<run>/colab_env.json``.
