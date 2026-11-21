@@ -445,16 +445,50 @@ def close(shared: dict) -> None:
     gc.collect()
 
 
+class LogConflict(ValueError):
+    """The local and synced judge logs disagree in a way a merge cannot settle."""
+
+
 def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
     """Both logs in one, keeping each log's own order (no timestamps needed).
 
     The local log is the base. A record only the backup has goes right after the
     nearest earlier record (in backup order) that both logs share, or first if there
-    is none (a fresh VM: the backup is the older history). Backup-only records after
-    the same shared record keep their order and come before later local records.
+    is none (a fresh VM: the backup is the older history).
+
+    Where the order between the two histories is unknown it does not matter as long
+    as they agree, so real disagreements raise ``LogConflict`` instead of silently
+    picking one: shared records in a different order, or a request with ``ok``
+    verdicts only in the local log and only in the backup that answer differently.
     """
     key = canonical_json
     pos = {key(r): i for i, r in enumerate(local)}
+    shared = [pos[key(r)] for r in backup if key(r) in pos]
+    if shared != sorted(shared):
+        raise LogConflict(
+            "the local and synced judge.jsonl list shared records in a different order"
+        )
+    backup_only = [r for r in backup if key(r) not in pos]
+    in_backup = {key(r) for r in backup}
+    local_only = [r for r in local if key(r) not in in_backup]
+
+    def answers(rows: list[dict]) -> dict[str, set]:
+        out: dict[str, set] = {}
+        for r in rows:
+            if r.get("status") == "ok":
+                out.setdefault(r["request_id"], set()).add(
+                    (r.get("motion_matches"), r.get("drawing_kept"))
+                )
+        return out
+
+    mine, theirs = answers(local_only), answers(backup_only)
+    clash = sorted(rid for rid in mine.keys() & theirs.keys() if mine[rid] != theirs[rid])
+    if clash:
+        raise LogConflict(
+            f"local and synced judge.jsonl disagree on {len(clash)} request(s), e.g. "
+            f"{clash[:3]}: keep one log (move the other away) and run again"
+        )
+
     after: dict[int, list[dict]] = {}  # local index (-1 = start) -> backup-only records
     anchor = -1
     for r in backup:
@@ -472,8 +506,8 @@ def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
 
 def _restore(run_dir: Path, sync_dir: str | Path | None) -> None:
     """Take in records that only the synced copy has (e.g. a fresh VM resuming), so
-    the first sync does not overwrite the backup with a shorter log (``merge_logs``
-    keeps the order of both logs, so the latest-verdict rule still holds)."""
+    the first sync does not overwrite the backup with a shorter log. Raises
+    ``LogConflict`` (before anything is judged or synced) when the logs disagree."""
     if not sync_dir:
         return
     backup = Path(sync_dir) / "judge.jsonl"

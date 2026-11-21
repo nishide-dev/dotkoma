@@ -361,3 +361,41 @@ def test_merge_logs_keeps_the_order_of_both_logs():
     assert merge_logs([a, b], [a]) == [a, b]
     assert merge_logs([a, c], [a, b, c, d]) == [a, b, c, d]
     assert merge_logs([], [a, b]) == [a, b]
+
+
+def test_merge_logs_refuses_histories_it_cannot_order():
+    from dotkoma.judge import LogConflict, merge_logs
+
+    def rec(n, verdict=True):
+        return {
+            "request_id": "x",
+            "n": n,
+            "status": "ok",
+            "motion_matches": verdict,
+            "drawing_kept": True,
+        }
+
+    a, b = rec(0), rec(1)
+    with pytest.raises(LogConflict, match="order"):
+        merge_logs([a, b], [b, a])
+    with pytest.raises(LogConflict, match="disagree on 1"):
+        merge_logs([rec(2, True)], [rec(3, False)])  # divergent, different answers
+    same = merge_logs([rec(2)], [rec(3)])  # divergent but the same answer: fine
+    assert len(same) == 2
+    failed = {"request_id": "x", "n": 4, "status": "failed"}
+    assert len(merge_logs([rec(2)], [failed])) == 2  # a failure never hides an ok
+
+
+def test_a_conflict_stops_before_judging_or_syncing(run, tmp_path):
+    from dotkoma.judge import LogConflict
+
+    sync = tmp_path / "sync"
+    judge(run, FAKE, limit=1, judge_factory=lambda s: FakeJudge(), sync_dir=sync)
+    rec = read_jsonl(run / "judge.jsonl")[0]
+    other = {**rec, "started_at": "x", "motion_matches": False, "verdict": "reject"}
+    write_jsonl_atomic(sync / "judge.jsonl", [other])
+    before = (sync / "judge.jsonl").read_bytes()
+    with pytest.raises(LogConflict):
+        judge(run, FAKE, judge_factory=lambda s: FakeJudge(), sync_dir=sync)
+    assert (sync / "judge.jsonl").read_bytes() == before
+    assert len(read_jsonl(run / "judge.jsonl")) == 1
