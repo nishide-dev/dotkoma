@@ -349,3 +349,15 @@ def test_a_stale_backup_does_not_override_a_newer_verdict(run, tmp_path):
     assert latest_verdicts(run)[rid]["verdict"] == "accept"
     assert len(read_jsonl(run / "judge.jsonl")) == len(recs) + 1
     assert read_jsonl(sync / "judge.jsonl") == read_jsonl(run / "judge.jsonl")
+
+
+def test_merge_logs_keeps_the_order_of_both_logs():
+    from dotkoma.judge import merge_logs
+
+    a, b, c, d = ({"request_id": "x", "n": i, "started_at": "t"} for i in range(4))
+    assert merge_logs([a], [a, b]) == [a, b]  # same second: backup's order holds
+    assert merge_logs([c], [a, b]) == [a, b, c]  # fresh VM: backup is older
+    assert merge_logs([a, c], [a, b]) == [a, b, c]
+    assert merge_logs([a, b], [a]) == [a, b]
+    assert merge_logs([a, c], [a, b, c, d]) == [a, b, c, d]
+    assert merge_logs([], [a, b]) == [a, b]

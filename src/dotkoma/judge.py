@@ -445,13 +445,35 @@ def close(shared: dict) -> None:
     gc.collect()
 
 
+def merge_logs(local: list[dict], backup: list[dict]) -> list[dict]:
+    """Both logs in one, keeping each log's own order (no timestamps needed).
+
+    The local log is the base. A record only the backup has goes right after the
+    nearest earlier record (in backup order) that both logs share, or first if there
+    is none (a fresh VM: the backup is the older history). Backup-only records after
+    the same shared record keep their order and come before later local records.
+    """
+    key = canonical_json
+    pos = {key(r): i for i, r in enumerate(local)}
+    after: dict[int, list[dict]] = {}  # local index (-1 = start) -> backup-only records
+    anchor = -1
+    for r in backup:
+        k = key(r)
+        if k in pos:
+            anchor = pos[k]
+        else:
+            after.setdefault(anchor, []).append(r)
+    out = list(after.get(-1, []))
+    for i, r in enumerate(local):
+        out.append(r)
+        out.extend(after.get(i, []))
+    return out
+
+
 def _restore(run_dir: Path, sync_dir: str | Path | None) -> None:
     """Take in records that only the synced copy has (e.g. a fresh VM resuming), so
-    the first sync does not overwrite the backup with a shorter log.
-
-    The merged log is ordered by ``started_at`` (stable for ties), so a stale backup
-    cannot put an older verdict after a newer one.
-    """
+    the first sync does not overwrite the backup with a shorter log (``merge_logs``
+    keeps the order of both logs, so the latest-verdict rule still holds)."""
     if not sync_dir:
         return
     backup = Path(sync_dir) / "judge.jsonl"
@@ -459,14 +481,10 @@ def _restore(run_dir: Path, sync_dir: str | Path | None) -> None:
         return
     log_path = run_dir / "judge.jsonl"
     local = read_jsonl(log_path)
-    have = {canonical_json(r) for r in local}
-    extra = [r for r in read_jsonl(backup) if canonical_json(r) not in have]
-    if not extra:
-        return
-    # backup first: on equal timestamps the local record stays last and wins
-    merged = sorted(extra + local, key=lambda r: r.get("started_at", ""))
-    write_jsonl_atomic(log_path, merged)
-    log.info("restored %d judge records from %s", len(extra), backup)
+    merged = merge_logs(local, read_jsonl(backup))
+    if len(merged) != len(local):
+        write_jsonl_atomic(log_path, merged)
+        log.info("restored %d judge records from %s", len(merged) - len(local), backup)
 
 
 def _sync(run_dir: Path, sync_dir: str | Path | None) -> None:
