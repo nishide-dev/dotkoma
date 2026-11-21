@@ -1,0 +1,11 @@
+# A/B: describe-first instruction + diff row
+[judge]
+backend = "qwen"
+model_id = "Qwen/Qwen3.5-9B"
+model_revision = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+scale = 12
+max_frames = 8
+verdicts = ["candidate", "flagged"]
+max_new_tokens = 400
+diff_row = "faded"
+instruction = "The image shows a looping pixel-art animation of \"{subject}\". In the top row, panel S is the original 16x16 sprite and panels 1 to {n} are the frames of the loop in order. In the bottom row, under each frame, a faded copy of S marks in magenta every pixel where that frame differs from S.\n\nStep 1. Without assuming anything about what should happen, describe what you see: what appears (its colour, shape and position), what moves, and which parts of S disappear or change shape. Use the magenta marks to find the changes. Say \"almost nothing\" if only a few pixels change.\n\nStep 2. Now compare your description with the requested motion \"{action}\": {criteria}.\n- motion_matches: true only if the changes you described are this motion. Different changes (for example sparkles or stars, clouds, coloured puffs, leaves, liquid filling a container, the whole object changing colour or brightness, the object moving or turning) or almost no change mean false.\n- drawing_kept: true only if no part of S disappears or changes shape apart from the part that does the motion.\n\nAnswer with one JSON object and nothing else, with the fields in this order:\n{{\"changes\": \"your step 1 description\", \"motion_matches\": true or false, \"drawing_kept\": true or false, \"reason\": \"one short sentence\"}}"

@@ -15,7 +15,8 @@
 | `selections.jsonl` | 人 | 目視後のコマ選択の上書き `{"job_id", "start", "end"}` または `{"job_id", "indices"}` |
 | `final/<job_id>/` | finalize | `frames/NNN.png`（正本）、`sample.json`（表示時間・出典・検査値）、`preview.gif` |
 | `finalize.jsonl` | finalize | 全ジョブの機械判定（`candidate` / `flagged` / `reject` とフラグ） |
-| `review.jsonl` | 人 | 最終目視の採否（機械判定とは別に残す） |
+| `judge.jsonl` | judge | 追記専用。サンプルごとの VLM の判定（`motion_matches`、`drawing_kept`、`verdict` = `accept` / `reject`、`reason`、生の出力）。`request_id` ごとに最後の `ok` が有効 |
+| `review.jsonl` | 人 | 最終目視の採否（機械判定とは別に残す）。1 行 `{"job_id", "postprocess_id", "verdict": "accept" / "reject" / "unsure", "motion_matches", "drawing_kept", "reason", "reviewer", "method"}`。`postprocess_id` が今の後処理と違う行は古いコマへの判定として扱う |
 
 - `job_id` は生成に効く入力すべてのハッシュ。同じ入力なら同じID、条件を変えれば別ID。
 - `generate` を再実行すると未完了のジョブだけ処理する。失敗ジョブは `--retry-failed` で再試行。
@@ -28,6 +29,15 @@
 - 色はループ全体で 1 つのパレットに寄せる（`finalize.palette`）。既定の `source+stable` は、元絵の色に「元絵のどの色からも `new_color_distance`（RGB 距離 80）より離れ、`new_color_min_frame_share`（半分）以上のコマに `new_color_min_pixels`（2 px）以上ずつ現れる色」を加える（開いた目の白など）。一部のコマにしか出ない色（変形途中・一瞬のノイズ）は元絵の色に寄せる。加えた色が引き寄せるのは、まとめるときと同じ条件を満たす画素（元絵のどの色からも `new_color_distance` より離れ、加えた色から `new_color_distance / 2` 以内）だけで、それ以外は最も近い元絵の色に寄せる。加えた色は `checks.added_colors` に残す。`preview.gif` は 255 色を超えると、多く使われる 255 色で近似する（`frames/` の PNG は近似しない）。`source` は元絵の色だけ、`none` は寄せない。
 - 生成時のモデルの置き方（`generation.offload`、Colab では `scripts/colab_pilot.py --offload`）は、`model`（部品ごとに CPU オフロード）・`none`（全部 GPU）・`resident`（プロンプトを先にまとめてエンコードし、テキストエンコーダを外して 2 エキスパートと VAE を GPU に常駐）。A100 40 GB では `resident` が最も速い（`docs/experiments/speed-01.md`）。`resident` は出力がわずかに変わるので `job_id` に入る（`model.placement`）。設定で指定し、generate はジョブの指定に従う。`model` / `none` は実行時の選択で `job_id` に入らない（`results.jsonl` の `runtime.offload` に残る）。`results.jsonl` の `timings` に 1 本ごとの時間の内訳が残る
 - `finalize` は元動画を読み直すだけなので、後処理設定やコマ選択を変えて何度でもやり直せる。
+
+## VLM の判定（judge）
+
+`dotkoma judge configs/judge.toml work/<run> ...`（Colab GPU では `scripts/colab_pilot.py --stage judge --judge-config configs/judge.toml`）。finalize の後に、機械判定が `judge.verdicts`（既定 `candidate` と `flagged`）のサンプルを VLM（既定 Qwen3.5-9B、計画と同じモデル）に見せる。
+
+- 見せる画像は 1 枚: 元絵（S）と各コマ（1〜N、長いループは `max_frames` に間引く）を同じ倍率（`scale`、既定 12）で横に並べたもの。その下に差分の段（`diff_row`、既定 `silhouette`）: 各コマの下に、元絵の形を灰色で描き、元絵と違う画素をマゼンタで示す（`faded` は薄くした元絵の上に示す旧版、`none` は差分の段なし）。背景は白・黒・青のうち、どのコマの色からも最も遠いもの（白い湯気が白背景で消えないように）。人が目視するときも同じ画像（`judge.sheet`）を使う。判定の版の比較は `docs/experiments/judge-01.md`
+- 問うことは 2 つ。`motion_matches`: 指示した動作（`[judge.criteria]` か既定の `DEFAULT_CRITERIA` の説明）がはっきり起きているか。別の変化（湯気の代わりにきらめき、泡の代わりに液が満ちる、全体の色が変わる）やほぼ静止は false。`drawing_kept`: 動く部分以外が元絵のままか。両方 true なら `accept`
+- `request_id` はコマと元絵の画素・使ったコマ番号・`postprocess_id`・実際の指示文・判定設定のハッシュ。後処理や判定設定を変えると新しい判定になる
+- 機械判定（`finalize.jsonl`）・VLM の判定（`judge.jsonl`）・目視（`review.jsonl`）は別のファイルに残す。一致率は `scripts/judge_agreement.py work/<run> ...` で見る
 
 ## 品質チェック（`sample.json` の `checks`）
 

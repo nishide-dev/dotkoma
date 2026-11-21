@@ -1,4 +1,4 @@
-"""Command line entry: ``dotkoma prepare|generate|finalize``."""
+"""Command line entry: ``dotkoma prepare|plan|generate|finalize|judge``."""
 
 from __future__ import annotations
 
@@ -59,6 +59,31 @@ def cmd_finalize(args) -> None:
     print(json.dumps({"status": status, "auto_verdict": verdict, "flags": flags}, indent=1))
 
 
+def cmd_judge(args) -> None:
+    from .config import load_judge_config
+    from .judge import close, judge
+
+    cfg = load_judge_config(args.judge_config)
+    names = [Path(r).name for r in args.runs]
+    if args.sync_dir and len(set(names)) != len(names):
+        raise SystemExit("run dirs must have distinct names when --sync-dir is used")
+    shared: dict = {}  # one model load for all runs
+    try:
+        for run in args.runs:
+            sync = Path(args.sync_dir) / Path(run).name if args.sync_dir else None
+            counts = judge(
+                run,
+                cfg,
+                limit=args.limit,
+                retry_failed=args.retry_failed,
+                sync_dir=sync,
+                shared=shared,
+            )
+            print(run, json.dumps(counts))
+    finally:
+        close(shared)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="dotkoma")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -81,6 +106,15 @@ def main(argv: list[str] | None = None) -> None:
     g.add_argument("--retry-failed", action="store_true")
     g.add_argument("--sync-dir", help="copy each finished mp4 + results.jsonl here (e.g. Drive)")
     add("finalize", cmd_finalize, "raw mp4 -> 16x16 RGBA loops, checks, preview GIFs")
+    j = sub.add_parser("judge", help="VLM checks finalized loops against their action (Colab GPU)")
+    j.add_argument("judge_config", help="judge TOML, e.g. configs/judge.toml")
+    j.add_argument("runs", nargs="+", help="run dirs with finalize output, e.g. work/pilot-03")
+    j.add_argument("--limit", type=int, help="per run")
+    j.add_argument("--retry-failed", action="store_true")
+    j.add_argument(
+        "--sync-dir", help="copy judge.jsonl to <sync-dir>/<run name>/ after each answer"
+    )
+    j.set_defaults(fn=cmd_judge)
 
     args = p.parse_args(argv)
     logging.basicConfig(

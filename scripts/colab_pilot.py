@@ -6,7 +6,12 @@ Upload the repo source (``src/``, ``scripts/``) and the prepared run directory
     python scripts/colab_pilot.py work/pilot [--limit N] [--sync-dir DIR] [--no-offload]
     python scripts/colab_pilot.py work/pilot --stage plan   # VLM plans (plan_requests.jsonl)
 
+    python scripts/colab_pilot.py work/pilot-03 work/pilot-04 --stage judge \
+        --judge-config configs/judge.toml   # VLM judge (finalize output)
+
 For ``--stage plan`` upload ``plan_requests.jsonl`` + ``inputs/`` instead of jobs.jsonl.
+For ``--stage judge`` upload ``finalize.jsonl`` + ``final/`` + ``inputs/`` and the
+judge config.
 
 GPU dependencies are installed here, not in the local uv environment. The
 versions that actually ran are written to ``<run>/colab_env.json``.
@@ -117,7 +122,8 @@ def main() -> None:
         "config (generation.offload) because it is part of job_id",
     )
     p.add_argument("--skip-install", action="store_true")
-    p.add_argument("--stage", choices=["generate", "plan"], default="generate")
+    p.add_argument("--stage", choices=["generate", "plan", "judge"], default="generate")
+    p.add_argument("--judge-config", type=Path, help="judge TOML (for --stage judge)")
     a = p.parse_args()
 
     require_torch()
@@ -132,6 +138,34 @@ def main() -> None:
         sys.exit(f"run dirs need distinct names when syncing: {names}")
     for run_dir in a.run_dir:
         print(json.dumps(record_env(run_dir)), flush=True)
+    if a.stage == "judge":
+        from dotkoma.config import load_judge_config
+        from dotkoma.judge import close, judge
+
+        if not a.judge_config:
+            sys.exit("--stage judge needs --judge-config")
+        cfg = load_judge_config(a.judge_config)
+        many = len(a.run_dir) > 1
+        loaded: dict = {}  # one model load for all runs
+        try:
+            for run_dir in a.run_dir:
+                sync = (
+                    (Path(a.sync_dir) / run_dir.name if many else a.sync_dir)
+                    if a.sync_dir
+                    else None
+                )
+                counts = judge(
+                    run_dir,
+                    cfg,
+                    limit=a.limit,
+                    retry_failed=a.retry_failed,
+                    sync_dir=sync,
+                    shared=loaded,
+                )
+                print(run_dir, json.dumps(counts), flush=True)
+        finally:
+            close(loaded)
+        return
     if a.stage == "plan":
         from dotkoma.plan import plan
 
